@@ -1314,7 +1314,7 @@ function renderLanProxyStats(d) {
   $('#lpStatNote').innerHTML = d.enabled
     ? (hasCred
       ? '已启用鉴权，客户端需填写相同的用户名与密码。'
-      : '⚠ 无鉴权开放代理：同网段任意设备可免密使用，建议补上用户名密码。')
+      : '未设置账号密码，属于开放代理。')
     : '未开启时，sing-box 配置里不会有这两个入站。';
 }
 

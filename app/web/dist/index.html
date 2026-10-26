@@ -580,84 +580,73 @@
           <div class="grid-2">
             <div class="stack-12">
               <div class="card">
-                <div class="card-hd"><h3>本机 mixed 入站</h3><span class="sub">系统代理入口 · 端口可改</span><div class="right"><span class="badge mono" id="lpMixBadge">127.0.0.1:7890</span></div></div>
-                <div class="card-bd" style="display:flex;flex-direction:column;gap:12px">
-                  <div style="font-size:10.5px;color:var(--text-4);line-height:1.6">
-                    对应配置里的 <code>mixed</code> 入站，浏览器/系统代理填这个地址即可；改完会重新渲染配置并重启核心。
-                  </div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                    <div class="field"><label>端口</label><input class="input" id="lpMixPort" type="number" min="1024" max="65535" /></div>
+                <div class="card-hd"><h3>本机 mixed 入站</h3><span class="sub">系统代理入口 · 不支持鉴权</span><div class="right"><span class="badge mono" id="lpMixBadge">127.0.0.1:7890</span></div></div>
+                <div class="card-bd">
+                  <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">
+                    <div class="field" style="width:108px"><label>端口</label><input class="input" id="lpMixPort" type="number" min="1024" max="65535" /></div>
                     <div class="field"><label>监听范围</label>
                       <div class="seg" id="lpMixListenSeg">
                         <button type="button" data-listen="127.0.0.1" class="on">仅本机</button>
                         <button type="button" data-listen="0.0.0.0">局域网</button>
                       </div>
                     </div>
+                    <button class="btn primary sm" id="lpMixSave" style="margin-left:auto">应用</button>
                   </div>
-                  <div class="callout warn" id="lpMixOpenWarn" style="display:none"><svg width="14" height="14"><use href="#i-alert"/></svg><div>mixed 入站<b>不支持用户名密码</b>：监听 0.0.0.0 等于把无鉴权代理暴露给整个局域网，任何设备都能免密借用。要给局域网设备用，请优先用下面的 SOCKS5 / HTTP 入站（支持鉴权）。</div></div>
-                  <button class="btn block sm" id="lpMixSave">保存 mixed 端口</button>
+                  <div class="callout warn" id="lpMixOpenWarn" style="display:none;margin-top:12px"><svg width="14" height="14"><use href="#i-alert"/></svg><div>mixed <b>不支持用户名密码</b>：监听 0.0.0.0 等于把无鉴权代理暴露给整个局域网。要给局域网设备用，请用下面的 SOCKS5 / HTTP 入站。</div></div>
                 </div>
               </div>
 
               <div class="card">
-                <div class="card-hd"><h3>代理设置</h3><span class="sub">独立端口 · 可选鉴权</span><div class="right"><span class="badge" id="lpBadge">未开启</span></div></div>
+                <div class="card-hd"><h3>局域网代理</h3><span class="sub">SOCKS5 / HTTP · 可选鉴权</span><div class="right"><span class="badge" id="lpBadge">未开启</span><button class="switch" id="lpSwitch" title="开启 / 关闭局域网代理"></button></div></div>
                 <div class="card-bd" style="display:flex;flex-direction:column;gap:12px">
-                  <div style="display:flex;align-items:center;gap:10px">
-                    <div style="flex:1;min-width:0">
-                      <div style="font-size:12.5px;color:var(--text)">开启局域网代理</div>
-                      <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">SOCKS5 与 HTTP 各占一个端口，可选择性带用户名密码鉴权</div>
-                    </div>
-                    <button class="switch" id="lpSwitch"></button>
-                  </div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                    <div class="field"><label>SOCKS5 端口</label><input class="input" id="lpSocks" type="number" min="1024" max="65535" /></div>
-                    <div class="field"><label>HTTP 端口</label><input class="input" id="lpHttp" type="number" min="1024" max="65535" /></div>
-                  </div>
-                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                    <div class="field"><label>用户名</label><input class="input" id="lpUser" placeholder="留空 = 不鉴权（开放代理）" /></div>
+                  <div style="display:grid;grid-template-columns:96px 96px minmax(0,1fr) minmax(0,1fr);gap:10px;align-items:end">
+                    <div class="field"><label>SOCKS5</label><input class="input" id="lpSocks" type="number" min="1024" max="65535" /></div>
+                    <div class="field"><label>HTTP</label><input class="input" id="lpHttp" type="number" min="1024" max="65535" /></div>
+                    <div class="field"><label>用户名</label><input class="input" id="lpUser" placeholder="留空 = 不鉴权" /></div>
                     <div class="field">
                       <label style="display:flex;align-items:center;justify-content:space-between;gap:6px">
                         <span>密码</span>
-                        <button class="btn ghost xs" id="lpGen" type="button" style="height:18px;padding:0 6px;font-size:10px">随机生成</button>
+                        <button class="btn ghost xs" id="lpGen" type="button" style="height:16px;padding:0 4px;font-size:10px">随机</button>
                       </label>
-                      <input class="input" id="lpPass" placeholder="留空 = 不鉴权（开放代理）" />
+                      <input class="input" id="lpPass" placeholder="留空 = 不鉴权" />
                     </div>
                   </div>
-                  <div style="font-size:10.5px;color:var(--text-4);line-height:1.6;margin-top:-4px">
-                    用户名与密码<b>都填写</b>才启用鉴权；<b>都留空</b>则创建<b>无鉴权开放代理</b>（局域网内任意设备可免密使用）；只填其一会报错。
+                  <div class="callout warn" id="lpOpenWarn" style="display:none"><svg width="14" height="14"><use href="#i-alert"/></svg><div>当前为<strong>开放代理（无鉴权）</strong>：任何能连到本机 <span id="lpOpenPorts"></span> 端口的设备都可免密借用，请确认网络环境可信。</div></div>
+                  <div style="display:flex;align-items:center;gap:12px">
+                    <div style="font-size:10.5px;color:var(--text-4);line-height:1.6;flex:1;min-width:0">
+                      用户名与密码<b>都填</b>才鉴权；<b>都留空</b>＝无鉴权开放代理；只填一个会报错。
+                    </div>
+                    <button class="btn primary sm" id="lpSave">保存并应用</button>
                   </div>
-                  <div class="callout warn" id="lpOpenWarn" style="display:none"><svg width="14" height="14"><use href="#i-alert"/></svg><div>当前为<strong>开放代理（无鉴权）</strong>：任何能连到本机 <span id="lpOpenPorts"></span> 端口的设备都可免密借用此代理，请确认网络环境可信。</div></div>
-                  <button class="btn primary block sm" id="lpSave">保存并应用（会重启核心）</button>
-                  <div class="callout" id="lpHint" style="display:none"><svg width="14" height="14"><use href="#i-info"/></svg><div id="lpLinks" style="font-family:var(--mono);font-size:10.5px;line-height:1.7;word-break:break-all"></div></div>
                 </div>
               </div>
             </div>
             <div class="stack-12">
               <div class="card">
-                <div class="card-hd"><h3>当前状态</h3><span class="sub">来自面板设置</span></div>
-                <div class="card-bd" style="display:flex;flex-direction:column;gap:10px">
-                  <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">运行状态</span><span class="badge" id="lpStatRun">未开启</span></div>
-                  <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">SOCKS5 监听</span><span class="badge mono" id="lpStatSocks">—</span></div>
-                  <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">HTTP 监听</span><span class="badge mono" id="lpStatHttp">—</span></div>
-                  <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">鉴权方式</span><span class="badge" id="lpStatAuth">—</span></div>
-                  <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3);flex:none">出口路由</span><span class="badge lime" id="lpStatRoute">跟随路由模式</span></div>
-                  <div style="border-top:1px solid var(--line);padding-top:12px;font-size:10.5px;color:var(--text-4);line-height:1.7" id="lpStatNote">未开启时，sing-box 配置里不会有这两个入站。</div>
+                <div class="card-hd"><h3>当前状态</h3><div class="right"><span class="badge" id="lpStatRun">未开启</span></div></div>
+                <div class="card-bd" style="display:flex;flex-direction:column;gap:9px">
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3)">SOCKS5</span><span class="badge mono" id="lpStatSocks">—</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3)">HTTP</span><span class="badge mono" id="lpStatHttp">—</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3)">鉴权</span><span class="badge" id="lpStatAuth">—</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3)">出口</span><span class="badge lime" id="lpStatRoute">跟随路由模式</span></div>
+                  <div style="font-size:10.5px;color:var(--text-4);line-height:1.6" id="lpStatNote">未开启时，sing-box 配置里不会有这两个入站。</div>
+                  <div class="callout" id="lpHint" style="display:none;margin-top:2px"><svg width="14" height="14"><use href="#i-info"/></svg><div id="lpLinks" style="font-family:var(--mono);font-size:10.5px;line-height:1.7;word-break:break-all"></div></div>
                 </div>
               </div>
               <div class="card">
                 <div class="card-hd"><h3>客户端怎么填</h3><span class="sub">手动指定，无需改网关</span></div>
-                <div class="card-bd" style="display:flex;flex-direction:column">
-                  <div style="display:flex;gap:10px">
-                    <span class="badge lime" style="flex:none;height:20px">SOCKS5</span>
-                    <div style="font-size:11.5px;line-height:1.6;color:var(--text-2)">代理地址填<b>本机局域网 IP</b> + 上方 SOCKS5 端口；支持 UDP 的客户端（如 Telegram）可直接用。</div>
+                <div class="card-bd" style="display:flex;flex-direction:column;gap:10px">
+                  <div style="display:flex;gap:8px;align-items:flex-start">
+                    <span class="badge lime" style="flex:none;height:18px">SOCKS5</span>
+                    <div style="font-size:11.5px;line-height:1.55;color:var(--text-2)">本机局域网 IP + SOCKS5 端口；支持 UDP 的客户端（Telegram 等）可直接用。</div>
                   </div>
-                  <div style="display:flex;gap:10px;padding-top:12px;margin-top:12px;border-top:1px solid var(--line)">
-                    <span class="badge" style="flex:none;height:20px">HTTP</span>
-                    <div style="font-size:11.5px;line-height:1.6;color:var(--text-2)">浏览器、系统代理里填 HTTP 端口即可；与 SOCKS5 指向同一个出站，分流规则一致。</div>
+                  <div style="display:flex;gap:8px;align-items:flex-start">
+                    <span class="badge" style="flex:none;height:18px">HTTP</span>
+                    <div style="font-size:11.5px;line-height:1.55;color:var(--text-2)">浏览器或系统代理填 HTTP 端口，与 SOCKS5 共用同一出站和分流规则。</div>
                   </div>
-                  <div style="display:flex;gap:10px;padding-top:12px;margin-top:12px;border-top:1px solid var(--line)">
-                    <span class="badge amber" style="flex:none;height:20px">注意</span>
-                    <div style="font-size:11.5px;line-height:1.6;color:var(--text-2)">端口对外开放（0.0.0.0）。没有鉴权时<b>同网段任何设备都能借用</b>，建议至少设置用户名密码。</div>
+                  <div style="display:flex;gap:8px;align-items:flex-start">
+                    <span class="badge amber" style="flex:none;height:18px">注意</span>
+                    <div style="font-size:11.5px;line-height:1.55;color:var(--text-2)">两个端口都监听 0.0.0.0，无鉴权时同网段设备可免密借用。</div>
                   </div>
                 </div>
               </div>
