@@ -270,3 +270,44 @@ func TestRenderMigratesRuleSetDownloadDetour(t *testing.T) {
 		t.Fatalf("已有的 http_client 被覆盖: %v", hc)
 	}
 }
+
+func TestRenderMixedInboundOverride(t *testing.T) {
+	doc := renderDoc(t, RenderOpts{
+		DataDir:     t.TempDir(),
+		MixedPort:   7891,
+		MixedListen: "0.0.0.0",
+	}, testNode("a", true))
+
+	mixed := findInbound(t, doc, "mixed-in")
+	if mixed["listen_port"] != float64(7891) {
+		t.Fatalf("mixed listen_port = %v, want 7891", mixed["listen_port"])
+	}
+	if mixed["listen"] != "0.0.0.0" {
+		t.Fatalf("mixed listen = %v, want 0.0.0.0", mixed["listen"])
+	}
+}
+
+func TestRenderMixedInboundKeepsTemplateWhenUnset(t *testing.T) {
+	doc := renderDoc(t, RenderOpts{DataDir: t.TempDir()}, testNode("a", true))
+	mixed := findInbound(t, doc, "mixed-in")
+	if mixed["listen_port"] != float64(7890) || mixed["listen"] != "127.0.0.1" {
+		t.Fatalf("mixed = %v:%v, want 127.0.0.1:7890", mixed["listen"], mixed["listen_port"])
+	}
+}
+
+func TestFromSettingsCarriesMixed(t *testing.T) {
+	opts := FromSettings(model.Settings{
+		LanProxy: true, LanSocksPort: 1080, LanHTTPPort: 8118,
+		LanUser: "u", LanPass: "p", TunEnabled: true, RoutingMode: "global",
+		MixedPort: 7895, MixedListen: "::1",
+	}, "/data")
+	if opts.DataDir != "/data" || !opts.LanProxy || opts.SocksPort != 1080 || opts.HTTPPort != 8118 {
+		t.Fatalf("opts = %+v", opts)
+	}
+	if opts.User != "u" || opts.Pass != "p" || !opts.TunEnabled || opts.RoutingMode != "global" {
+		t.Fatalf("opts = %+v", opts)
+	}
+	if opts.MixedPort != 7895 || opts.MixedListen != "::1" {
+		t.Fatalf("mixed = %d/%q", opts.MixedPort, opts.MixedListen)
+	}
+}

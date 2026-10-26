@@ -30,7 +30,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.5"
+var Version = "0.9.6"
 
 const (
 	tokenTTL  = 7 * 24 * time.Hour
@@ -584,6 +584,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"panel_version":  Version,
 		"arch":           runtime.GOOS + "/" + runtime.GOARCH,
 		"mixed_port":     detectMixedPort(raw),
+		"mixed_listen":   set.MixedListen,
 		"config_version": cfgVer,
 		"nodes":          len(nodes),
 		"enabled":        enabled,
@@ -1051,13 +1052,7 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	set := s.store.Settings()
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.RenderOpts{
-		DataDir:  s.store.Dir(),
-		LanProxy: set.LanProxy, SocksPort: set.LanSocksPort, HTTPPort: set.LanHTTPPort,
-		User: set.LanUser, Pass: set.LanPass,
-		TunEnabled:  set.TunEnabled,
-		RoutingMode: set.RoutingMode,
-	})
+	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return
@@ -1301,17 +1296,24 @@ func (s *Server) lanProxyGet(w http.ResponseWriter, r *http.Request) {
 		"open":         set.LanProxy && set.LanUser == "" && set.LanPass == "",
 		"socks_url":    socksURL,
 		"http_url":     httpURL,
+		// 本机 mixed 入站：给系统代理用，端口/监听范围可在这里一起改
+		"mixed_port":   set.MixedPort,
+		"mixed_listen": set.MixedListen,
+		"mixed_url":    fmt.Sprintf("%s:%d", set.MixedListen, set.MixedPort),
+		"mixed_open":   set.MixedListen != "127.0.0.1" && set.MixedListen != "::1",
 	})
 }
 
 // lanProxySet 保存并下发局域网代理配置。改端口/账号需要重启核心。
 func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Enabled   bool   `json:"enabled"`
-		SocksPort int    `json:"socks_port"`
-		HTTPPort  int    `json:"http_port"`
-		Username  string `json:"username"`
-		Password  string `json:"password"`
+		Enabled     bool   `json:"enabled"`
+		SocksPort   int    `json:"socks_port"`
+		HTTPPort    int    `json:"http_port"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+		MixedPort   int    `json:"mixed_port"`
+		MixedListen string `json:"mixed_listen"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 8192)).Decode(&in); err != nil {
 		writeErr(w, 400, "bad_request", "请求体不合法")
@@ -1326,8 +1328,36 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 	if in.HTTPPort == 0 {
 		in.HTTPPort = set.LanHTTPPort
 	}
-	// 用户名/密码直接采用前端传入值，不再用历史值隐式填充：
-	// 两者都留空 = 不鉴权（开放代理）；都填写 = 鉴权；只填一个 = 报错。
+	if in.MixedPort == 0 {
+		in.MixedPort = set.MixedPort
+	}
+	if in.MixedListen == "" {
+		in.MixedListen = set.MixedListen
+	}
+	if in.MixedListen == "" {
+		in.MixedListen = "127.0.0.1"
+	}
+
+	// 面板/内核固定占用的端口；mixed 端口现在可改，所以只在这里排除固定的几个。
+	reserved := map[int]string{
+		9090: "面板", 9091: "Clash API", 12345: "透明代理", 5354: "局域网 DNS", 53: "DNS",
+	}
+
+	// mixed 入站与局域网代理开关无关：它始终是系统代理的入口，随时可改。
+	switch in.MixedListen {
+	case "127.0.0.1", "::1", "0.0.0.0", "::":
+	default:
+		writeErr(w, 400, "bad_listen", "mixed 监听地址只能是 127.0.0.1、::1、0.0.0.0 或 ::")
+		return
+	}
+	if in.MixedPort < 1024 || in.MixedPort > 65535 {
+		writeErr(w, 400, "bad_port", "mixed 端口需在 1024-65535 之间")
+		return
+	}
+	if name, ok := reserved[in.MixedPort]; ok {
+		writeErr(w, 400, "port_conflict", fmt.Sprintf("端口 %d 已被%s占用", in.MixedPort, name))
+		return
+	}
 
 	if in.Enabled {
 		for _, p := range []int{in.SocksPort, in.HTTPPort} {
@@ -1335,9 +1365,12 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, 400, "bad_port", "端口需在 1024-65535 之间")
 				return
 			}
-			switch p {
-			case 9090, 9091, 7890, 12345, 5354, 53:
-				writeErr(w, 400, "port_conflict", fmt.Sprintf("端口 %d 已被面板或核心占用", p))
+			if name, ok := reserved[p]; ok {
+				writeErr(w, 400, "port_conflict", fmt.Sprintf("端口 %d 已被%s占用", p, name))
+				return
+			}
+			if p == in.MixedPort {
+				writeErr(w, 400, "port_conflict", fmt.Sprintf("端口 %d 已被 mixed 入站占用", p))
 				return
 			}
 		}
@@ -1362,6 +1395,8 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 	set.LanProxy = in.Enabled
 	set.LanSocksPort = in.SocksPort
 	set.LanHTTPPort = in.HTTPPort
+	set.MixedPort = in.MixedPort
+	set.MixedListen = in.MixedListen
 	// 关闭开关时前端可能提交空账号（例如页面刚加载）：此时保留原凭据，
 	// 避免「关一下再开」就把密码清空，还得重新填一遍。
 	if in.Enabled || in.Username != "" || in.Password != "" {
@@ -1376,13 +1411,7 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "template_failed", err.Error())
 		return
 	}
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.RenderOpts{
-		DataDir:  s.store.Dir(),
-		LanProxy: set.LanProxy, SocksPort: set.LanSocksPort, HTTPPort: set.LanHTTPPort,
-		User: set.LanUser, Pass: set.LanPass,
-		TunEnabled:  set.TunEnabled,
-		RoutingMode: set.RoutingMode,
-	})
+	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return
@@ -1407,13 +1436,17 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 	}
 	socksURL, httpURL := lanProxyURLs(host, set.LanSocksPort, set.LanHTTPPort, set.LanUser, set.LanPass)
 	writeJSON(w, 200, map[string]any{
-		"ok":        true,
-		"enabled":   set.LanProxy,
-		"socks_url": socksURL,
-		"http_url":  httpURL,
-		"username":  set.LanUser,
-		"password":  set.LanPass,
-		"open":      set.LanProxy && set.LanUser == "" && set.LanPass == "",
+		"ok":           true,
+		"enabled":      set.LanProxy,
+		"socks_url":    socksURL,
+		"http_url":     httpURL,
+		"username":     set.LanUser,
+		"password":     set.LanPass,
+		"open":         set.LanProxy && set.LanUser == "" && set.LanPass == "",
+		"mixed_port":   set.MixedPort,
+		"mixed_listen": set.MixedListen,
+		"mixed_url":    fmt.Sprintf("%s:%d", set.MixedListen, set.MixedPort),
+		"mixed_open":   set.MixedListen != "127.0.0.1" && set.MixedListen != "::1",
 	})
 }
 
@@ -1491,13 +1524,7 @@ func (s *Server) tunSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "template_failed", err.Error())
 		return
 	}
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.RenderOpts{
-		DataDir:  s.store.Dir(),
-		LanProxy: set.LanProxy, SocksPort: set.LanSocksPort, HTTPPort: set.LanHTTPPort,
-		User: set.LanUser, Pass: set.LanPass,
-		TunEnabled:  set.TunEnabled,
-		RoutingMode: set.RoutingMode,
-	})
+	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return

@@ -353,3 +353,41 @@ func TestVerifyTproxyInbounds(t *testing.T) {
 		t.Fatal("空配置应报错")
 	}
 }
+
+func TestLanProxySetValidatesMixedInbound(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.SaveSettings(model.Settings{
+		LanSocksPort: 1080, LanHTTPPort: 8118,
+		MixedPort: 7890, MixedListen: "127.0.0.1",
+	})
+	s := &Server{store: st, tokens: map[string]time.Time{}}
+
+	cases := []struct {
+		name string
+		body string
+		code string
+	}{
+		{"mixed 端口撞面板", `{"enabled":false,"mixed_port":9090}`, "port_conflict"},
+		{"mixed 端口过低", `{"enabled":false,"mixed_port":80}`, "bad_port"},
+		{"mixed 监听地址非法", `{"enabled":false,"mixed_listen":"1.2.3.4"}`, "bad_listen"},
+		{"局域网端口撞 mixed", `{"enabled":true,"socks_port":7895,"http_port":8118,"mixed_port":7895}`, "port_conflict"},
+	}
+	for _, tc := range cases {
+		rec := httptest.NewRecorder()
+		s.lanProxySet(rec, httptest.NewRequest(http.MethodPut, "/api/v1/lanproxy", strings.NewReader(tc.body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: code=%d body=%s, want 400", tc.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"error":"`+tc.code+`"`) {
+			t.Fatalf("%s: body=%s, want error %q", tc.name, rec.Body.String(), tc.code)
+		}
+	}
+
+	// 校验失败不能改到设置：之前踩过「接口返回 400 但设置已生效」
+	if got := st.Settings(); got.MixedPort != 7890 || got.MixedListen != "127.0.0.1" {
+		t.Fatalf("settings 被改动: mixed=%d/%q", got.MixedPort, got.MixedListen)
+	}
+}

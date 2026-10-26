@@ -580,6 +580,26 @@
           <div class="grid-2">
             <div class="stack-12">
               <div class="card">
+                <div class="card-hd"><h3>本机 mixed 入站</h3><span class="sub">系统代理入口 · 端口可改</span><div class="right"><span class="badge mono" id="lpMixBadge">127.0.0.1:7890</span></div></div>
+                <div class="card-bd" style="display:flex;flex-direction:column;gap:12px">
+                  <div style="font-size:10.5px;color:var(--text-4);line-height:1.6">
+                    对应配置里的 <code>mixed</code> 入站，浏览器/系统代理填这个地址即可；改完会重新渲染配置并重启核心。
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                    <div class="field"><label>端口</label><input class="input" id="lpMixPort" type="number" min="1024" max="65535" /></div>
+                    <div class="field"><label>监听范围</label>
+                      <div class="seg" id="lpMixListenSeg">
+                        <button type="button" data-listen="127.0.0.1" class="on">仅本机</button>
+                        <button type="button" data-listen="0.0.0.0">局域网</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="callout warn" id="lpMixOpenWarn" style="display:none"><svg width="14" height="14"><use href="#i-alert"/></svg><div>mixed 入站<b>不支持用户名密码</b>：监听 0.0.0.0 等于把无鉴权代理暴露给整个局域网，任何设备都能免密借用。要给局域网设备用，请优先用下面的 SOCKS5 / HTTP 入站（支持鉴权）。</div></div>
+                  <button class="btn block sm" id="lpMixSave">保存 mixed 端口</button>
+                </div>
+              </div>
+
+              <div class="card">
                 <div class="card-hd"><h3>代理设置</h3><span class="sub">独立端口 · 可选鉴权</span><div class="right"><span class="badge" id="lpBadge">未开启</span></div></div>
                 <div class="card-bd" style="display:flex;flex-direction:column;gap:12px">
                   <div style="display:flex;align-items:center;gap:10px">

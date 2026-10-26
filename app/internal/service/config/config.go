@@ -30,6 +30,27 @@ type RenderOpts struct {
 	TunEnabled bool
 	// RoutingMode 为空或 rule 时保持模板原样；global/direct 会覆盖模板的分流规则。
 	RoutingMode string
+	// MixedPort / MixedListen 覆盖模板里 mixed 入站的监听端口与地址。
+	// 模板是老用户手改过的文件，里面写死的 127.0.0.1:7890 不该成为改端口的唯一途径。
+	MixedPort   int
+	MixedListen string
+}
+
+// FromSettings 把面板设置映射成渲染选项。
+// 集中一处拼装，避免以后新增字段时漏掉某个调用点（曾经有 5 处重复构造）。
+func FromSettings(set model.Settings, dataDir string) RenderOpts {
+	return RenderOpts{
+		DataDir:     dataDir,
+		LanProxy:    set.LanProxy,
+		SocksPort:   set.LanSocksPort,
+		HTTPPort:    set.LanHTTPPort,
+		User:        set.LanUser,
+		Pass:        set.LanPass,
+		TunEnabled:  set.TunEnabled,
+		RoutingMode: set.RoutingMode,
+		MixedPort:   set.MixedPort,
+		MixedListen: set.MixedListen,
+	}
 }
 
 // Render 把模板与节点片段合并成完整配置。
@@ -119,6 +140,27 @@ func Render(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, er
 			abs, err := filepath.Abs(filepath.Join(opts.DataDir, p))
 			if err == nil {
 				cache["path"] = abs
+			}
+		}
+	}
+
+	// 本机 mixed 入站：端口与监听范围以面板设置为准（模板里通常写死 127.0.0.1:7890）。
+	// 只改已有 mixed 入站，不凭空新增：模板是用户可编辑的，删掉 mixed 就是真的不要它。
+	if opts.MixedPort > 0 || opts.MixedListen != "" {
+		inb, _ := merged["inbounds"].([]any)
+		for _, it := range inb {
+			m, _ := it.(map[string]any)
+			if m == nil {
+				continue
+			}
+			if t, _ := m["type"].(string); t != "mixed" {
+				continue
+			}
+			if opts.MixedPort > 0 {
+				m["listen_port"] = opts.MixedPort
+			}
+			if opts.MixedListen != "" {
+				m["listen"] = opts.MixedListen
 			}
 		}
 	}

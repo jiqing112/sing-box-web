@@ -61,13 +61,7 @@ func (s *Server) routingSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "template_failed", err.Error())
 		return
 	}
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.RenderOpts{
-		DataDir:  s.store.Dir(),
-		LanProxy: set.LanProxy, SocksPort: set.LanSocksPort, HTTPPort: set.LanHTTPPort,
-		User: set.LanUser, Pass: set.LanPass,
-		TunEnabled:  set.TunEnabled,
-		RoutingMode: set.RoutingMode,
-	})
+	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return

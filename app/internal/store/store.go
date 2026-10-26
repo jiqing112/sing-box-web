@@ -61,6 +61,12 @@ func Open(dir string) (*Store, error) {
 	if s.settings.LanHTTPPort <= 0 {
 		s.settings.LanHTTPPort = 8118
 	}
+	if s.settings.MixedPort <= 0 {
+		s.settings.MixedPort = 7890
+	}
+	if s.settings.MixedListen == "" {
+		s.settings.MixedListen = "127.0.0.1"
+	}
 	if err := s.read(filepath.Join(dir, "subs.json"), &s.subs); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}

@@ -350,8 +350,9 @@ function renderStatus() {
   $('#heroNodes').textContent = s.enabled;
   $('#heroRules').textContent = s.rules;
   const mixedPort = s.mixed_port || 7890;
+  const mixedListen = s.mixed_listen || '127.0.0.1';
   $('#heroIn').textContent = `mixed :${mixedPort}`;
-  $('#mixedHint').textContent = `127.0.0.1:${mixedPort}`;
+  $('#mixedHint').textContent = `${mixedListen}:${mixedPort}`;
 
   $('#dashDesc').textContent = running
     ? `${s.version || 'sing-box'} 正在运行，${s.enabled} 个出站节点已下发，配置版本 v${s.config_version}。`
@@ -1281,7 +1282,19 @@ async function loadLanProxy() {
       $('#lpHint').style.display = 'none';
     }
     renderLanProxyStats(d);
+    renderMixedInbound(d);
   } catch (e) { /* ignore */ }
+}
+
+// renderMixedInbound 回填 mixed 入站（系统代理入口）的端口与监听范围。
+// 它与局域网代理开关无关：即使局域网代理关着，mixed 也一直存在。
+function renderMixedInbound(d) {
+  const port = d.mixed_port || 7890;
+  const listen = d.mixed_listen || '127.0.0.1';
+  $('#lpMixPort').value = port;
+  $('#lpMixBadge').textContent = `${listen}:${port}`;
+  $$('#lpMixListenSeg button').forEach((b) => b.classList.toggle('on', b.dataset.listen === listen));
+  $('#lpMixOpenWarn').style.display = listen === '0.0.0.0' || listen === '::' ? '' : 'none';
 }
 
 // renderLanProxyStats 把接口返回值铺到「当前状态」卡片上。
@@ -1305,38 +1318,57 @@ function renderLanProxyStats(d) {
     : '未开启时，sing-box 配置里不会有这两个入站。';
 }
 
-async function saveLanProxy() {
-  const body = {
+// lanProxyBody 收集这一页上的全部字段。
+// 接口是「整体保存」，所以改 mixed 端口时也必须把局域网代理的当前值一起带上，
+// 否则会把另一块设置冲掉。
+function lanProxyBody() {
+  return {
     enabled: $('#lpSwitch').classList.contains('on'),
     socks_port: parseInt($('#lpSocks').value, 10) || 0,
     http_port: parseInt($('#lpHttp').value, 10) || 0,
     username: $('#lpUser').value.trim(),
-    password: $('#lpPass').value
+    password: $('#lpPass').value,
+    mixed_port: parseInt($('#lpMixPort').value, 10) || 0,
+    mixed_listen: $('#lpMixListenSeg button.on')?.dataset.listen || '127.0.0.1'
   };
+}
+
+async function saveLanProxy(kind) {
+  const body = lanProxyBody();
+  const isMixed = kind === 'mixed';
   const open = body.enabled && !body.username && !body.password;
   let confirmBody = '会重新渲染配置并重启核心，现有连接会中断约 1 秒。';
-  if (open) {
+  let title = '保存局域网代理设置？';
+  if (isMixed) {
+    title = '保存 mixed 入站设置？';
+    confirmBody = `mixed 入站将改为 <b>${body.mixed_listen}:${body.mixed_port}</b>。<br><br>` + confirmBody;
+    if (body.mixed_listen !== '127.0.0.1') {
+      confirmBody = '<b style="color:var(--warn)">⚠ mixed 入站不支持鉴权，监听 0.0.0.0 等于把无鉴权代理暴露给整个局域网</b><br><br>' + confirmBody;
+    }
+  } else if (open) {
     confirmBody = '<b style="color:var(--warn)">⚠ 用户名和密码均为空，将创建「无鉴权开放代理」</b><br>局域网内任意设备（以及能连通该端口的外部网络）都可免密使用此代理，存在被他人滥用的风险。<br><br>' + confirmBody;
   }
-  const ok = await confirmDialog({
-    title: '保存局域网代理设置？',
-    body: confirmBody,
-    confirm: '保存并应用'
-  });
+  const ok = await confirmDialog({ title, body: confirmBody, confirm: '保存并应用' });
   if (!ok) return;
-  $('#lpSave').disabled = true;
+  const btn = isMixed ? $('#lpMixSave') : $('#lpSave');
+  btn.disabled = true;
   try {
     const d = await api('/api/v1/lanproxy', { method: 'PUT', body: JSON.stringify(body) });
-    const msg = d.enabled
-      ? (d.open ? '已开启（无鉴权开放代理）' : `SOCKS5 ${d.socks_url.split('@').pop()} · HTTP ${d.http_url.split('@').pop()}`)
-      : '局域网代理已关闭';
+    let msg;
+    if (isMixed) {
+      msg = `mixed 入站已改为 ${d.mixed_url}`;
+    } else {
+      msg = d.enabled
+        ? (d.open ? '已开启（无鉴权开放代理）' : `SOCKS5 ${d.socks_url.split('@').pop()} · HTTP ${d.http_url.split('@').pop()}`)
+        : '局域网代理已关闭';
+    }
     toast('ok', '已应用', msg);
     await loadLanProxy();
     await pollStatus();
   } catch (e) {
     toast('err', '保存失败', e.message);
   } finally {
-    $('#lpSave').disabled = false;
+    btn.disabled = false;
   }
 }
 
@@ -1346,8 +1378,23 @@ $('#lpGen').onclick = () => {
   toast('info', '已生成新密码', '点「保存并应用」后生效，记得同步到客户端');
 };
 
-$('#lpSave').onclick = saveLanProxy;
+$('#lpSave').onclick = () => saveLanProxy('lan');
+$('#lpMixSave').onclick = () => saveLanProxy('mixed');
 $('#lpRefresh').onclick = loadLanProxy;
+
+// 监听范围切换只改本地选中态，保存时才下发
+$$('#lpMixListenSeg button').forEach((b) => {
+  b.onclick = () => {
+    $$('#lpMixListenSeg button').forEach((x) => x.classList.toggle('on', x === b));
+    const listen = b.dataset.listen;
+    $('#lpMixOpenWarn').style.display = listen === '0.0.0.0' ? '' : 'none';
+    $('#lpMixBadge').textContent = `${listen}:${$('#lpMixPort').value || 7890}`;
+  };
+});
+$('#lpMixPort').oninput = () => {
+  const listen = $('#lpMixListenSeg button.on')?.dataset.listen || '127.0.0.1';
+  $('#lpMixBadge').textContent = `${listen}:${$('#lpMixPort').value || 7890}`;
+};
 
 $('#dnsSwitch').onclick = async () => {
   const next = !(state.tproxy && state.tproxy.dns);

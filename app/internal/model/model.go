@@ -67,6 +67,10 @@ type Settings struct {
 	LanPass      string   `json:"lan_pass"`
 	TproxyPort   int      `json:"tproxy_port"`
 	LanCIDRs     []string `json:"lan_cidrs"`
+	// 本机 mixed 入站（系统代理用）：端口与监听范围可在面板里改，
+	// 渲染时覆盖模板里写死的 127.0.0.1:7890。
+	MixedPort   int    `json:"mixed_port"`
+	MixedListen string `json:"mixed_listen"`
 	// 面板启动时是否自动拉起 sing-box；nil 表示未设置（视为 true，兼容旧配置）
 	AutostartCore *bool  `json:"autostart_core,omitempty"`
 	ConfigVersion int    `json:"config_version"`

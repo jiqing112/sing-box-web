@@ -86,12 +86,9 @@ func main() {
 	// 这里自动降级为无 TUN 配置并关掉开关，下次以管理员启动可再打开。
 	if settings.TunEnabled && !api.TunSupported() {
 		if tpl, err := st.Template(); err == nil {
-			raw, err := config.Render(tpl, st.AllNodes(), config.RenderOpts{
-				DataDir:  st.Dir(),
-				LanProxy: settings.LanProxy, SocksPort: settings.LanSocksPort, HTTPPort: settings.LanHTTPPort,
-				User: settings.LanUser, Pass: settings.LanPass,
-				RoutingMode: settings.RoutingMode,
-			})
+			opts := config.FromSettings(settings, st.Dir())
+			opts.TunEnabled = false // 本次就是要把 tun 关掉再渲染
+			raw, err := config.Render(tpl, st.AllNodes(), opts)
 			if err == nil {
 				_ = st.WriteConfig(raw)
 				settings.TunEnabled = false
