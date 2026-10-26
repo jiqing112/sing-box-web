@@ -296,6 +296,7 @@ async function pollStatus() {
     state.status = await api('/api/v1/status');
     renderStatus();
     loadTun();
+    if (state.lanproxy) renderLanProxyStats(state.lanproxy);
   } catch (e) { /* ignore transient */ }
 }
 
@@ -1279,7 +1280,29 @@ async function loadLanProxy() {
     } else {
       $('#lpHint').style.display = 'none';
     }
+    renderLanProxyStats(d);
   } catch (e) { /* ignore */ }
+}
+
+// renderLanProxyStats 把接口返回值铺到「当前状态」卡片上。
+// 端口监听由 sing-box 的入站决定：核心没跑起来时开关为开也不会真的监听。
+function renderLanProxyStats(d) {
+  const host = location.hostname || '127.0.0.1';
+  const running = !!state.status?.running;
+  const live = !!d.enabled && running;
+  $('#lpChip').innerHTML = `<i class="dot${live ? ' live' : ''}"></i> ${live ? '运行中' : d.enabled ? '待核心启动' : '未开启'}`;
+  $('#lpStatRun').textContent = live ? '监听中' : d.enabled ? '已开启 · 核心未运行' : '未开启';
+  $('#lpStatRun').className = 'badge ' + (live ? 'lime' : d.enabled ? 'amber' : '');
+  $('#lpStatSocks').textContent = d.enabled ? `${host}:${d.socks_port}` : '—';
+  $('#lpStatHttp').textContent = d.enabled ? `${host}:${d.http_port}` : '—';
+  const hasCred = !!d.username && !!d.password;
+  $('#lpStatAuth').textContent = !d.enabled ? '—' : hasCred ? `用户名密码（${d.username}）` : '无鉴权（开放代理）';
+  $('#lpStatAuth').className = 'badge ' + (!d.enabled ? '' : hasCred ? 'lime' : 'amber');
+  $('#lpStatNote').innerHTML = d.enabled
+    ? (hasCred
+      ? '已启用鉴权，客户端需填写相同的用户名与密码。'
+      : '⚠ 无鉴权开放代理：同网段任意设备可免密使用，建议补上用户名密码。')
+    : '未开启时，sing-box 配置里不会有这两个入站。';
 }
 
 async function saveLanProxy() {
@@ -1324,6 +1347,7 @@ $('#lpGen').onclick = () => {
 };
 
 $('#lpSave').onclick = saveLanProxy;
+$('#lpRefresh').onclick = loadLanProxy;
 
 $('#dnsSwitch').onclick = async () => {
   const next = !(state.tproxy && state.tproxy.dns);
@@ -1636,7 +1660,7 @@ $('#asPanelSwitch').onclick = async () => {
 const PAGE_META = {
   dashboard: ['概览', '控制台'], subs: ['订阅', '资源'], nodes: ['节点', '资源'],
   config: ['配置', '管理'], service: ['服务', '管理'], tproxy: ['透明代理', '网络'],
-  conns: ['连接', '网络'], settings: ['设置', '系统']
+  lanproxy: ['局域网代理', '网络'], conns: ['连接', '网络'], settings: ['设置', '系统']
 };
 
 function go(page) {
@@ -1649,6 +1673,8 @@ function go(page) {
   $('#crumbPath').innerHTML = `/ <b>${section}</b>`;
   $('#content').scrollTop = 0;
   if (location.hash !== `#${page}`) history.replaceState(null, '', `#${page}`);
+  // 进入局域网代理页时重新拉一次，避免显示别的页面停留期间改过的旧值
+  if (page === 'lanproxy') loadLanProxy();
 }
 
 window.addEventListener('hashchange', () => {
@@ -1668,6 +1694,7 @@ const COMMANDS = [
   { g: '页面', t: '配置编辑', p: 'config', i: 'i-code' },
   { g: '页面', t: '服务控制', p: 'service', i: 'i-activity' },
   { g: '页面', t: '透明代理 / TUN', p: 'tproxy', i: 'i-shield' },
+  { g: '页面', t: '局域网代理', p: 'lanproxy', i: 'i-lan' },
   { g: '页面', t: '实时连接', p: 'conns', i: 'i-list' },
   { g: '操作', t: '重启 sing-box', a: () => serviceAction('restart'), i: 'i-refresh' },
   { g: '操作', t: '全部节点测速', a: () => { go('nodes'); testAll(); }, i: 'i-zap' },

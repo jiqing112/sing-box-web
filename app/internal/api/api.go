@@ -30,7 +30,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.4"
+var Version = "0.9.5"
 
 const (
 	tokenTTL  = 7 * 24 * time.Hour
