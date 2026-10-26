@@ -1,0 +1,39 @@
+# ---- 运行数据：含订阅链接、节点 UUID/密码、面板口令哈希，绝不入库 ----
+/panel-data/
+/app/data/
+/data/
+*.db
+
+# ---- 本地构建产物 / 二进制 ----
+/build/
+/.build/
+/dist/
+/stage/
+/panel
+/panel.exe
+/panel.conf
+/panel-*
+/*.exe
+/*.gz
+/sing-box.exe
+/sing-box
+*.prev*
+*~
+
+# ---- 本机部署与调试脚本（含内网 IP / 口令）----
+/.tools/
+/.workbuddy-ai/
+/.chrome-debug*/
+/.smoke/
+/.verify/
+/.subtest/
+
+# ---- 日志与截图（截图含真实订阅地址）----
+*.log
+/shots/
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

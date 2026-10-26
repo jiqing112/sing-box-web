@@ -1,0 +1,12 @@
+# 统一换行符：仓库里一律 LF，避免 install.sh 在 Linux 上带 \r 无法执行
+* text=auto eol=lf
+
+# Windows 批处理必须是 CRLF
+*.bat text eol=crlf
+
+# 二进制
+*.png binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.exe binary

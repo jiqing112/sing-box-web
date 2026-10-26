@@ -1,0 +1,191 @@
+name: release
+
+# 打 tag 即发布：把面板二进制和对应平台的 sing-box 内核打成一个开箱即用的压缩包。
+# 也可以在 Actions 页面手动触发（需要填版本号）。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号，例如 v0.9.5'
+        required: true
+      singbox_version:
+        description: '随包分发的 sing-box 版本（不带 v）'
+        required: false
+        default: '1.14.3'
+
+permissions:
+  contents: write
+
+env:
+  SINGBOX_VERSION: ${{ inputs.singbox_version || '1.14.3' }}
+
+jobs:
+  build:
+    name: package ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+            sb_asset: 'sing-box-*-linux-amd64.tar.gz'
+            sb_file: sing-box
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+            sb_asset: 'sing-box-*-linux-arm64.tar.gz'
+            sb_file: sing-box
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+            sb_asset: 'sing-box-*-windows-amd64.zip'
+            sb_file: sing-box.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: 解析版本号
+        id: ver
+        run: |
+          v="${{ inputs.version }}"
+          if [ -z "$v" ]; then v="${GITHUB_REF_NAME}"; fi
+          if [ -z "$v" ] || [ "$v" = "main" ] || [ "$v" = "master" ]; then v="v0.0.0-dev"; fi
+          echo "tag=$v" >> "$GITHUB_OUTPUT"
+          echo "plain=${v#v}" >> "$GITHUB_OUTPUT"
+
+      - name: 编译面板
+        working-directory: app
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          out=panel
+          if [ "$GOOS" = "windows" ]; then out=panel.exe; fi
+          mkdir -p ../dist
+          go build -trimpath \
+            -ldflags "-s -w -X singbox-panel/internal/api.Version=${{ steps.ver.outputs.plain }}" \
+            -o "../dist/$out" ./cmd/panel
+          ls -lh "../dist/$out"
+
+      - name: 跑单元测试
+        working-directory: app
+        run: go test ./...
+
+      - name: 下载 sing-box 内核 v${{ env.SINGBOX_VERSION }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p sb
+          gh release download "v${SINGBOX_VERSION}" \
+            --repo SagerNet/sing-box \
+            --pattern "${{ matrix.sb_asset }}" \
+            --dir sb
+          ls -lh sb
+
+      - name: 解出内核二进制
+        run: |
+          cd sb
+          for f in *; do
+            case "$f" in
+              *.zip)    unzip -oq "$f" ;;
+              *.tar.gz) tar -xzf "$f" ;;
+            esac
+          done
+          found=$(find . -type f -name '${{ matrix.sb_file }}' | head -1)
+          [ -n "$found" ] || { echo "内核二进制没找到"; exit 1; }
+          cp "$found" ../dist/${{ matrix.sb_file }}
+          chmod +x "../dist/${{ matrix.sb_file }}"
+          ls -lh "../dist"
+
+      - name: 打包（Linux）
+        if: matrix.goos == 'linux'
+        run: |
+          set -e
+          pkg="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
+          mkdir -p "stage/$pkg" out
+          cp dist/panel        "stage/$pkg/panel"
+          cp dist/sing-box     "stage/$pkg/sing-box"
+          cp app/deploy/panel.conf              "stage/$pkg/panel.conf"
+          cp app/deploy/sing-box-panel.service  "stage/$pkg/sing-box-panel.service"
+          cp app/deploy/install.sh              "stage/$pkg/install.sh"
+          cp app/deploy/README-linux.txt        "stage/$pkg/README.txt"
+          chmod 755 "stage/$pkg/panel" "stage/$pkg/sing-box" "stage/$pkg/install.sh"
+          chmod 600 "stage/$pkg/panel.conf"
+          tar -czf "out/$pkg.tar.gz" -C stage "$pkg"
+          ( cd out && sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256" )
+          ls -lh out
+
+      - name: 打包（Windows）
+        if: matrix.goos == 'windows'
+        run: |
+          set -e
+          pkg="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
+          mkdir -p "stage/$pkg" out
+          cp dist/panel.exe    "stage/$pkg/panel.exe"
+          cp dist/sing-box.exe "stage/$pkg/sing-box.exe"
+          cp app/deploy/panel.conf        "stage/$pkg/panel.conf"
+          cp app/deploy/start.bat         "stage/$pkg/start.bat"
+          cp app/deploy/README-windows.txt "stage/$pkg/README.txt"
+          ( cd stage && zip -r -9 "../out/$pkg.zip" "$pkg" >/dev/null )
+          ( cd out && sha256sum "$pkg.zip" > "$pkg.zip.sha256" )
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -lh artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || inputs.version }}
+          draft: false
+          generate_release_notes: true
+          body: |
+            开箱即用包：面板二进制 + 对应平台的 **sing-box ${{ env.SINGBOX_VERSION }}** 内核，解压即跑。
+
+            | 平台 | 文件 | 说明 |
+            | --- | --- | --- |
+            | Windows x64 | `*-windows-amd64.zip` | 解压后双击 `start.bat`，浏览器自动打开面板 |
+            | Linux x64 | `*-linux-amd64.tar.gz` | 解压后 `sudo ./install.sh` |
+            | Linux arm64 | `*-linux-arm64.tar.gz` | 同上（路由器 / ARM 小主机） |
+
+            **Windows 三步**：解压 → 双击 `start.bat` → 用窗口里打印的初始密码登录
+            （`admin` / `panel-data\initial-password`）。
+
+            **Linux 一条命令**：`tar -xzf *.tar.gz && cd sing-box-web-* && sudo ./install.sh`
+
+            首次启动会生成随机密码并写入 `data/initial-password`，登录后请改掉。
+            TUN 模式需要管理员 / root 权限。
+
+            每个包都附带 `.sha256` 校验文件。
+          files: |
+            artifacts/*.zip
+            artifacts/*.tar.gz
+            artifacts/*.sha256
+          fail_on_unmatched_files: true

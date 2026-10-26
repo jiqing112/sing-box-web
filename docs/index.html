@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>sing-box panel · 架构设计</title>
+<link rel="stylesheet" href="doc.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d10'/%3E%3Cpath d='M16 6l8 4.6v10.8L16 26l-8-4.6V10.6z' fill='none' stroke='%23c6ff4d' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='16' r='2.6' fill='%23c6ff4d'/%3E%3C/svg%3E" />
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 21 20H3z"/><path d="M12 9.5v4.5M12 17.2h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8h.01"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  </defs>
+</svg>
+
+<div class="progress"></div>
+
+<header class="top">
+  <div class="brand">
+    <span class="mark"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 2.6 20 7v10l-8 4.4L4 17V7z"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg></span>
+    sing-box panel
+  </div>
+  <span class="sep"></span>
+  <span class="doc-name">架构设计 / v0.9.2</span>
+  <div class="right">
+    <a class="btn" href="../web/index.html"><svg width="12" height="12"><use href="#i-back"/></svg>打开控制台原型</a>
+    <a class="btn accent" href="#summary">开始阅读</a>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="toc">
+    <div class="toc-hd">目录</div>
+    <a href="#summary"><span>00</span>一页纸架构</a>
+    <a href="#modules"><span>01</span>模块划分</a>
+    <a href="#flow"><span>02</span>数据流</a>
+    <a href="#api"><span>03</span>接口清单</a>
+    <a href="#binary"><span>04</span>单二进制与体积</a>
+    <a href="#tree"><span>05</span>目录结构</a>
+    <a href="#code"><span>06</span>P0 代码骨架</a>
+    <a href="#risk"><span>07</span>OOM / 启动风险</a>
+    <a href="#nongoals"><span>08</span>明确不做</a>
+    <div class="meta">
+      <span>go 1.23 · linux/arm64</span>
+      <span>svelte 5 · adapter-static</span>
+      <span>panel rss 14.2 MB</span>
+    </div>
+  </nav>
+
+  <article>
+    <div class="hero">
+      <div class="eyebrow"><i></i>architecture note · 2026.10</div>
+      <h1>把 sing-box 做成<br>一台<em>可运维的设备</em></h1>
+      <p class="lede">
+        面板不是官方 Dashboard 的复刻，也不是另一个配置生成器。它是一个 <span style="white-space:nowrap">20 MB</span> 以内的控制面：
+        只负责模板合并、进程生命周期、鉴权，以及把 sing-box 原生 API 安全地转给浏览器。
+        所有路由语义留在 sing-box 自己手里。
+      </p>
+      <div class="meta-row">
+        <span class="chip"><b>目标设备</b> MT7981B · 256 MB</span>
+        <span class="chip"><b>常驻内存</b> ≤ 20 MB</span>
+        <span class="chip"><b>交付</b> 单二进制 + embed</span>
+        <span class="chip"><b>存储</b> JSON + rename</span>
+      </div>
+    </div>
+
+    <!-- ============================================================ 00 -->
+    <section id="summary">
+      <h2><span class="n">00</span>一页纸架构</h2>
+
+      <p>一句话概括：<strong>面板是 sing-box 的薄控制面，不是它的配置编译器。</strong>
+      配置语义迭代交给上游，面板只维护「模板 + 节点片段 + 用户覆盖」三层 JSON 的合并关系，
+      并在每次写入前用 <code class="i">sing-box check</code> 做唯一权威校验。</p>
+
+      <div class="kpis">
+        <div class="kpi"><div class="k">Panel RSS</div><div class="v">14.2<small>MB</small></div><div class="d">预算 20 MB · GOGC=40</div></div>
+        <div class="kpi"><div class="k">单二进制</div><div class="v">9.1<small>MB</small></div><div class="d">-s -w · 含前端 0.4 MB</div></div>
+        <div class="kpi"><div class="k">配置快照</div><div class="v">3<small>份</small></div><div class="d">每份 ≤ 100 KB</div></div>
+        <div class="kpi"><div class="k">冷启动</div><div class="v">0.4<small>s</small></div><div class="d">ARM64 · 无额外进程</div></div>
+      </div>
+
+      <h3>五条设计原则</h3>
+      <ol>
+        <li><strong>语义下沉。</strong>面板不硬编码任何 sing-box 字段映射。模板由用户维护，节点片段由订阅解析产出，合并只做 JSON 层的 key 覆盖与数组拼接。</li>
+        <li><strong>内存有上限，而不是「尽量少」。</strong>Go 堆 6–8 MB、日志 50 行环形缓冲、延迟结果 36×32 B、连接列表 200 条封顶。每一项都有明确的数字预算。</li>
+        <li><strong>写前必校验，失败必回滚。</strong><code class="i">check</code> 是唯一权威；写入走 tmp → fsync → rename；重载失败自动回到上一快照。</li>
+        <li><strong>实时数据不落盘。</strong>延迟、连接、流量全部只存在于内存与 WebSocket，进程重启即清零。</li>
+        <li><strong>默认安全。</strong>监听 <code class="i">127.0.0.1:9090</code>，Bearer Token 无 Cookie，危险操作二次确认，tproxy 需显式选择。</li>
+      </ol>
+
+      <div class="note">
+        <svg width="15" height="15"><use href="#i-info"/></svg>
+        <div>与 v2rayA 的关系：借鉴它的<strong>用户流程</strong>（订阅 → 节点 → 一键透明代理 → 连接观测），
+        但不复刻它的<strong>配置生成架构</strong>（后端拼装完整配置 + RoutingA 方言）。本面板的输出永远是原生 sing-box JSON。</div>
+      </div>
+    </section>
+
+    <!-- ============================================================ 01 -->
+    <section id="modules">
+      <h2><span class="n">01</span>模块划分</h2>
+
+      <p>后端按「HTTP 边界 / 业务能力 / 存储原语」三层切分。handler 不写业务，service 不碰 <code class="i">http.ResponseWriter</code>，
+      store 只提供原子读写。每个包都对应一条硬约束。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:170px">包</th><th>职责</th><th style="width:150px">对应约束</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">cmd/panel</td><td>启动、flag、优雅退出；设置 <code class="i">GOMEMLIMIT</code> 与信号处理</td><td>二 · 常驻内存</td></tr>
+            <tr><td class="mono">internal/httpapi</td><td>路由、鉴权中间件、结构化错误、WS 升级</td><td>三 · 后端四件事</td></tr>
+            <tr><td class="mono">internal/service/config</td><td>模板合并、check、快照轮转、apply / rollback</td><td>三-1 / 三-4 / 三-5</td></tr>
+            <tr><td class="mono">internal/service/subscription</td><td>拉取、解析、归一化为 outbound 片段；原始响应不落盘</td><td>四 · P0 订阅</td></tr>
+            <tr><td class="mono">internal/service/supervisor</td><td>进程启停、状态、50 行环形日志、崩溃重启限流</td><td>四 · P0 服务控制</td></tr>
+            <tr><td class="mono">internal/service/clash</td><td>Clash API 客户端：delay、connections、traffic；字段裁剪与节流</td><td>三-3 · 六 · WS</td></tr>
+            <tr><td class="mono">internal/service/tproxy</td><td>生成并下发 nftables 规则；redirect 优先，tproxy 需显式选择</td><td>二 · 透明代理</td></tr>
+            <tr><td class="mono">internal/store</td><td>JSON 原子写、单文件大小守卫、快照目录管理</td><td>五 · 数据存储</td></tr>
+            <tr><td class="mono">web</td><td><code class="i">embed.FS</code> 静态资源，Go 二进制同时承担 API 与静态服务</td><td>二 · 单进程</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>前端不引入任何 UI 组件库与状态库。Svelte 编译产物直接操作 DOM，运行时只有一份约 40 KB 的调度代码：</p>
+
+      <ul>
+        <li><code class="i">src/lib/api.ts</code> — 唯一 fetch 出口，负责 Bearer Token、错误归一化。</li>
+        <li><code class="i">src/lib/ws.ts</code> — WebSocket 封装，指数退避重连（1s → 30s 封顶）。</li>
+        <li><code class="i">src/lib/stores/</code> — 只用 Svelte 原生 store，按领域拆分：nodes / service / config。</li>
+        <li><code class="i">src/routes/</code> — 每个页面一个目录，SvelteKit 默认按路由懒加载。</li>
+      </ul>
+    </section>
+
+    <!-- ============================================================ 02 -->
+    <section id="flow">
+      <h2><span class="n">02</span>数据流</h2>
+
+      <h3>A · 订阅 → 节点片段</h3>
+      <p><code class="i">POST /api/v1/subscriptions/{id}/refresh</code> 触发。fetcher 用 15s 超时、8 MB 上限读取响应；
+      parser 依次尝试 Clash YAML、Base64 节点列表、sing-box outbounds 三种格式；归一化后写入
+      <code class="i">outbounds.frag.json</code>（原子写）。<strong>原始响应只在函数栈上存活，返回即被 GC。</strong>
+      订阅 URL 使用 AES-GCM 加密后存入 <code class="i">subs.json</code>，日志仅输出掩码。</p>
+
+      <h3>B · 配置写入（最关键的一条链路）</h3>
+      <p>六步，任何一步失败都不会留下半截配置。校验进程与运行进程分离，写入与重载分离，回滚是独立能力而不是异常分支里的补丁。</p>
+
+      <div class="figure">
+        <svg viewBox="0 0 860 206" role="img" aria-label="配置写入与回滚流程">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#39414b"/>
+            </marker>
+            <marker id="arR" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 0 L10 5 L0 10 z" fill="#ff6f61"/>
+            </marker>
+          </defs>
+
+          <!-- connectors -->
+          <g stroke="#39414b" stroke-width="1.2" marker-end="url(#ar)">
+            <line x1="128" y1="86" x2="150" y2="86"/>
+            <line x1="278" y1="86" x2="300" y2="86"/>
+            <line x1="428" y1="86" x2="450" y2="86"/>
+            <line x1="578" y1="86" x2="600" y2="86"/>
+            <line x1="728" y1="86" x2="750" y2="86"/>
+          </g>
+
+          <!-- boxes -->
+          <g font-family="Inter, sans-serif">
+            <g>
+              <rect x="12" y="60" width="116" height="52" rx="8" fill="#0c0e12" stroke="#23282f"/>
+              <text x="70" y="82" fill="#edeff3" font-size="11.5" text-anchor="middle" font-weight="600">render</text>
+              <text x="70" y="97" fill="#656c77" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">template + frag</text>
+            </g>
+            <g>
+              <rect x="162" y="60" width="116" height="52" rx="8" fill="rgba(198,255,77,.05)" stroke="rgba(198,255,77,.3)"/>
+              <text x="220" y="82" fill="#d9f9a0" font-size="11.5" text-anchor="middle" font-weight="600">check</text>
+              <text x="220" y="97" fill="#8a9a63" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">sing-box check</text>
+            </g>
+            <g>
+              <rect x="312" y="60" width="116" height="52" rx="8" fill="#0c0e12" stroke="#23282f"/>
+              <text x="370" y="82" fill="#edeff3" font-size="11.5" text-anchor="middle" font-weight="600">snapshot</text>
+              <text x="370" y="97" fill="#656c77" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">keep 3</text>
+            </g>
+            <g>
+              <rect x="462" y="60" width="116" height="52" rx="8" fill="#0c0e12" stroke="#23282f"/>
+              <text x="520" y="82" fill="#edeff3" font-size="11.5" text-anchor="middle" font-weight="600">write</text>
+              <text x="520" y="97" fill="#656c77" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">tmp → fsync → rename</text>
+            </g>
+            <g>
+              <rect x="612" y="60" width="116" height="52" rx="8" fill="#0c0e12" stroke="#23282f"/>
+              <text x="670" y="82" fill="#edeff3" font-size="11.5" text-anchor="middle" font-weight="600">reload</text>
+              <text x="670" y="97" fill="#656c77" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">SIGHUP</text>
+            </g>
+            <g>
+              <rect x="762" y="60" width="86" height="52" rx="8" fill="#0c0e12" stroke="#23282f"/>
+              <text x="805" y="82" fill="#edeff3" font-size="11.5" text-anchor="middle" font-weight="600">probe</text>
+              <text x="805" y="97" fill="#656c77" font-size="9" text-anchor="middle" font-family="JetBrains Mono, monospace">/version</text>
+            </g>
+          </g>
+
+          <!-- rollback arc -->
+          <path d="M805 118 L805 168 L370 168 L370 118" fill="none" stroke="#ff6f61" stroke-width="1.1" stroke-dasharray="4 4" opacity=".75" marker-end="url(#arR)"/>
+          <text x="588" y="161" fill="#ff8f84" font-size="9.5" text-anchor="middle" font-family="JetBrains Mono, monospace">probe failed → restore snapshot → restart</text>
+
+          <text x="12" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">01</text>
+          <text x="162" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">02</text>
+          <text x="312" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">03</text>
+          <text x="462" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">04</text>
+          <text x="612" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">05</text>
+          <text x="762" y="40" fill="#464c56" font-size="9" font-family="JetBrains Mono, monospace">06</text>
+        </svg>
+        <div class="cap">apply 全程持有单飞锁；check 与 reload 之间不允许并发第二次 apply</div>
+      </div>
+
+      <h3>C · 实时数据（浏览器 ← 面板 ← Clash API）</h3>
+      <p>浏览器连接 <code class="i">/api/v1/ws/connections</code>，面板在服务端建立到
+      <code class="i">127.0.0.1:9091/connections</code> 的 WebSocket，读取后做三件事：
+      裁剪字段（只保留 host / chain / rule / up / down / start）、截断到 200 条、
+      按 2 秒节流只转发最新一帧。<strong>中间帧直接丢弃，不排队</strong>，避免弱 CPU 上堆积。
+      整条链路没有任何磁盘写入。</p>
+
+      <div class="note warn">
+        <svg width="15" height="15"><use href="#i-alert"/></svg>
+        <div><b>节流的实现位置很关键。</b>如果在前端节流，后端仍要把每帧 JSON 序列化并推过 socket；
+        在路由器上，序列化 200 条连接的峰值分配比网络传输更贵。因此节流必须发生在服务端读取循环里。</div>
+      </div>
+    </section>
+
+    <!-- ============================================================ 03 -->
+    <section id="api">
+      <h2><span class="n">03</span>关键接口清单</h2>
+
+      <p>全部挂在 <code class="i">/api/v1</code> 下，除登录外均需 <code class="i">Authorization: Bearer &lt;token&gt;</code>。
+      错误统一为 <code class="i">{ "error": "code", "message": "…", "detail": "…" }</code>，HTTP 状态码语义化。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th style="width:88px">方法</th><th style="width:250px">路径</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/auth/login</td><td>用户名 + 口令换 Token；失败按 IP 限速 5 次/分钟</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/status</td><td>核心状态、版本、uptime、内存、当前模式</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/subscriptions</td><td>订阅列表（URL 已掩码）</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/subscriptions</td><td>新增；服务端立即拉取一次并解析</td></tr>
+            <tr><td><span class="m put">PUT</span></td><td class="mono">/subscriptions/{id}</td><td>改名 / 换链 / 开关自动更新</td></tr>
+            <tr><td><span class="m del">DEL</span></td><td class="mono">/subscriptions/{id}</td><td>删除元数据与解析产物，不动当前配置</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/subscriptions/{id}/refresh</td><td>拉取 + 解析，返回节点数与耗时</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/nodes</td><td>节点列表 + 内存中的延迟缓存</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/nodes/delay</td><td>批量测速；服务端 semaphore(3)，结果 TTL 300s</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/config</td><td>渲染后的完整 JSON + 来源标记</td></tr>
+            <tr><td><span class="m put">PUT</span></td><td class="mono">/config</td><td>保存原始 JSON（仅校验，不应用）</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/config/validate</td><td>返回 <code class="i">sing-box check</code> 的 stdout/stderr 与耗时</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/config/apply</td><td>check → 快照 → 原子写 → 重载 → 探活</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/config/snapshots</td><td>最近 3 个快照（版本、时间、摘要）</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/config/rollback</td><td>回滚到指定快照，失败自动回到当前版本</td></tr>
+            <tr><td><span class="m post">POST</span></td><td class="mono">/service/{action}</td><td>start / stop / restart / reload</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/logs?tail=50</td><td>环形缓冲快照，最多 50 行</td></tr>
+            <tr><td><span class="m get">GET</span></td><td class="mono">/tproxy</td><td>当前模式、接口、排除网段、规则条数</td></tr>
+            <tr><td><span class="m put">PUT</span></td><td class="mono">/tproxy</td><td>下发 nftables；tproxy 需 body 带 <code class="i">accept_risk</code></td></tr>
+            <tr><td><span class="m ws">WS</span></td><td class="mono">/ws/traffic</td><td>上行/下行速率，2s 一帧</td></tr>
+            <tr><td><span class="m ws">WS</span></td><td class="mono">/ws/connections</td><td>连接列表，服务端裁剪 + 节流 + 200 条上限</td></tr>
+            <tr><td><span class="m get">ANY</span></td><td class="mono">/clash/*</td><td>鉴权后反代到 Clash API；白名单路径，不透传任意方法</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        <svg width="15" height="15"><use href="#i-info"/></svg>
+        <div><b>为什么不直接暴露 Clash API？</b>它是无鉴权的，且默认监听 9090 与面板端口冲突。
+        面板用 9091 独占内部回环，浏览器只能通过带 Bearer Token 的 <code class="i">/clash/*</code> 访问，
+        并强制走白名单（<code class="i">/proxies</code>、<code class="i">/connections</code>、<code class="i">/traffic</code>、<code class="i">/version</code>）。</div>
+      </div>
+    </section>
+
+    <!-- ============================================================ 04 -->
+    <section id="binary">
+      <h2><span class="n">04</span>单二进制与体积预估</h2>
+
+      <p>目标：<code class="i">scp panel root@router:/usr/bin/</code> 之后即可运行，不依赖 Node、不依赖 systemd、不额外起进程。
+      前端产物通过 <code class="i">embed</code> 编进 rodata 段，<code class="i">http.FileServer</code> 读取时直接引用这段只读内存，
+      <strong>不会把 400 KB 静态资源复制进 Go 堆</strong>。</p>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>组成</th><th style="width:110px">大小</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>Go runtime + net/http + crypto/tls</td><td class="mono">6.6 MB</td><td>arm64，<code class="i">-ldflags="-s -w"</code></td></tr>
+            <tr><td>业务代码（handler / service / store）</td><td class="mono">1.9 MB</td><td>无 ORM、无模板引擎、无第三方路由库</td></tr>
+            <tr><td>前端静态资源（embed）</td><td class="mono">0.42 MB</td><td>Svelte 编译产物；gzip 后约 110 KB</td></tr>
+            <tr><td>图标与字体</td><td class="mono">0.02 MB</td><td>内联 SVG sprite，不打包字体文件</td></tr>
+            <tr><td><b>合计</b></td><td class="mono"><b>≈ 9.1 MB</b></td><td>与 sing-box 本体（约 10 MB）同量级</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note warn">
+        <svg width="15" height="15"><use href="#i-alert"/></svg>
+        <div><b>不建议在 256 MB 设备上使用 UPX。</b>UPX 能把体积压到 3.6 MB，但运行时需要把整个镜像解压到匿名内存，
+        相当于用 <b>5 MB 磁盘</b> 换 <b>9 MB 常驻内存</b>，还会增加约 80 ms 启动时间。Flash 紧张时优先裁剪前端，
+        而不是压缩二进制。</div>
+      </div>
+
+      <h3>embed 的写法</h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">web/embed.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">package web
+
+import (
+	"embed"
+	"io/fs"
+	"net/http"
+	"strings"
+)
+
+// dist 由 `pnpm build` 产出：adapter-static，ssr=false，prerender=false。
+// 约束 二：前端必须是纯静态资源，运行时零 Node。
+//
+//go:embed all:dist
+var dist embed.FS
+
+// Handler 让同一个 Go 进程同时承担 API 与静态资源，不引入第二个常驻进程。
+func Handler() (http.Handler, error) {
+	sub, err := fs.Sub(dist, "dist")
+	if err != nil {
+		return nil, err
+	}
+	files := http.FileServer(http.FS(sub))
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 带内容哈希的产物可以长缓存，index.html 必须每次回源。
+		if strings.HasPrefix(r.URL.Path, "/_app/immutable/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		// SPA 回退：非静态资源路径一律返回 index.html
+		if !strings.Contains(r.URL.Path, ".") {
+			r.URL.Path = "/"
+		}
+		files.ServeHTTP(w, r)
+	}), nil
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- ============================================================ 05 -->
+    <section id="tree">
+      <h2><span class="n">05</span>目录结构</h2>
+
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">sing-box-panel/</span><span class="lang">tree</span><button class="copy">复制</button></div>
+        <pre><code data-lang="sh">sing-box-panel/
+├── cmd/
+│   └── panel/
+│       └── main.go              # flag、GOMEMLIMIT、优雅退出
+├── internal/
+│   ├── httpapi/
+│   │   ├── router.go            # 路由表 + 中间件链
+│   │   ├── middleware.go        # recover / 日志脱敏 / 限速
+│   │   ├── auth.go              # Bearer Token
+│   │   ├── subscription.go
+│   │   ├── node.go              # 含 semaphore(3) 测速
+│   │   ├── config.go            # validate / apply / rollback
+│   │   ├── service.go           # 启停 + 日志尾部
+│   │   ├── tproxy.go
+│   │   └── clashproxy.go        # REST + WS 反代，字段裁剪
+│   ├── service/
+│   │   ├── subscription/
+│   │   │   ├── fetch.go         # 15s / 8MB 上限，原始体不落盘
+│   │   │   ├── parse.go         # clash yaml / base64 / outbounds
+│   │   │   └── normalize.go     # 统一成 sing-box outbound
+│   │   ├── config/
+│   │   │   ├── render.go        # template + frag 合并
+│   │   │   ├── check.go         # 调用 sing-box check
+│   │   │   ├── snapshot.go      # 轮转，keep=3
+│   │   │   └── apply.go         # 单飞锁 + 回滚
+│   │   ├── supervisor/
+│   │   │   ├── process.go       # 启停 / 崩溃重启限流
+│   │   │   └── logring.go       # 50 行环形缓冲
+│   │   ├── clash/
+│   │   │   ├── client.go        # 127.0.0.1:9091
+│   │   │   ├── delay.go         # 结果 TTL 300s
+│   │   │   └── hub.go           # 2s 节流 + 200 条截断
+│   │   └── tproxy/
+│   │       ├── nft.go           # redirect 默认 / tproxy 可选
+│   │       └── probe.go         # 内核模块与端口预检
+│   ├── store/
+│   │   ├── atomic.go            # tmp → fsync → rename
+│   │   ├── subs.go
+│   │   └── panel.go
+│   └── model/
+│       ├── node.go
+│       ├── config.go
+│       └── errors.go            # 结构化错误
+├── web/
+│   ├── embed.go                 # //go:embed all:dist
+│   ├── dist/                    # 构建产物（gitignore）
+│   └── src/
+│       ├── app.html
+│       ├── app.css              # 设计令牌 + 原生组件样式
+│       ├── lib/
+│       │   ├── api.ts           # 唯一 fetch 出口
+│       │   ├── ws.ts            # 退避重连
+│       │   ├── format.ts
+│       │   ├── stores/
+│       │   │   ├── nodes.ts
+│       │   │   ├── service.ts
+│       │   │   └── config.ts
+│       │   └── components/
+│       │       ├── NodeRow.svelte
+│       │       ├── StatCard.svelte
+│       │       ├── ConfirmDialog.svelte
+│       │       └── TrafficChart.svelte
+│       └── routes/
+│           ├── +layout.svelte
+│           ├── +layout.ts       # export const ssr = false
+│           ├── +page.svelte     # 概览
+│           ├── subscriptions/+page.svelte
+│           ├── nodes/+page.svelte
+│           ├── config/+page.svelte
+│           ├── service/+page.svelte
+│           ├── tproxy/+page.svelte
+│           └── connections/+page.svelte
+├── deploy/
+│   ├── sing-box-panel.init       # procd 脚本（可选）
+│   └── nftables/10-singbox.nft
+├── Makefile
+└── go.mod</code></pre>
+      </div>
+    </section>
+
+    <!-- ============================================================ 06 -->
+    <section id="code">
+      <h2><span class="n">06</span>P0 代码骨架</h2>
+
+      <p>以下不是完整实现，而是<strong>决定架构走向的那几段</strong>。每段都标注它兑现的约束。</p>
+
+      <h3>6.1 原子写入 · <span style="color:var(--text-4);font-weight:400">约束 五（JSON + 原子写，单文件 ≤ 100 KB）</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/store/atomic.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">package store
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
+const maxFileSize = 100 << 10 // 约束：单文件 100 KB 上限
+
+// WriteJSON 以 tmp → fsync → rename 的方式落盘。
+// 断电时要么是旧文件，要么是新文件，永远不会出现半截 JSON。
+func WriteJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", filepath.Base(path), err)
+	}
+	if len(b) > maxFileSize {
+		return fmt.Errorf("%s exceeds 100KB budget: %d bytes",
+			filepath.Base(path), len(b))
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	defer os.Remove(tmp.Name()) // rename 成功后这里是 no-op
+
+	if _, err = tmp.Write(b); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil { // 关键：先把数据刷到 flash
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	// 同目录 rename 在同一文件系统内是原子操作。
+	return os.Rename(tmp.Name(), path)
+}</code></pre>
+      </div>
+
+      <h3>6.2 校验 → 快照 → 写入 → 回滚 · <span style="color:var(--text-4);font-weight:400">约束 三-4、三-5</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/service/config/apply.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">package config
+
+// Applier 全程单飞：check 与 reload 之间不允许并发第二次 apply，
+// 否则两次 check 进程叠加会在 256MB 设备上触发 OOM killer。
+type Applier struct {
+	mu       sync.Mutex
+	bin      string // /usr/bin/sing-box
+	confPath string // /etc/sing-box/config.json
+	snapDir  string // /etc/sing-box/snapshots
+	keep     int    // 默认 3，可配置
+	reload   func() error
+	probe    func(ctx context.Context) error // GET /version
+}
+
+func (a *Applier) Apply(ctx context.Context, raw []byte) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// 1. 语法校验：check 是唯一权威，面板不做字段级校验。
+	if err := a.check(ctx, raw); err != nil {
+		return &CheckError{Detail: err.Error()} // handler 原样回传给前端
+	}
+	// 2. 快照当前版本（保留最近 keep 份，默认 3）。
+	if err := a.snapshot(); err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	// 3. 原子替换。
+	if err := store.WriteFileAtomic(a.confPath, raw, 0o600); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	// 4. 重载并探活；失败则回滚，绝不停在一个起不来的配置上。
+	if err := a.reload(); err != nil {
+		return a.rollbackAndReport(ctx, err)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := a.probe(probeCtx); err != nil {
+		return a.rollbackAndReport(ctx, err)
+	}
+	return nil
+}
+
+func (a *Applier) check(ctx context.Context, raw []byte) error {
+	f, err := os.CreateTemp("", "sb-check-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, a.bin, "check", "-c", f.Name())
+	// check 是独立进程，单独限内存，避免它把整机拖垮。
+	cmd.Env = append(os.Environ(), "GOMEMLIMIT=32MiB")
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (a *Applier) rollbackAndReport(ctx context.Context, cause error) error {
+	if rbErr := a.Rollback(ctx); rbErr != nil {
+		return fmt.Errorf("apply failed (%v) and rollback failed: %w", cause, rbErr)
+	}
+	return fmt.Errorf("apply failed, rolled back to previous snapshot: %w", cause)
+}</code></pre>
+      </div>
+
+      <h3>6.3 进程管理 + 50 行环形日志 · <span style="color:var(--text-4);font-weight:400">约束 四 · P0 服务控制</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/service/supervisor/process.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">package supervisor
+
+const logCapacity = 50 // 约束：只保留最近 50 行，且只在内存
+
+type Supervisor struct {
+	mu     sync.Mutex
+	cmd    *exec.Cmd
+	ring   *Ring[LogLine] // 固定 50 槽，写满覆盖最旧
+	onExit func(error)
+}
+
+func (s *Supervisor) Start() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd != nil {
+		return ErrAlreadyRunning
+	}
+
+	cmd := exec.Command(s.bin, "run", "-c", s.confPath)
+	// 独立进程组：Stop 时能连同子进程一起收掉。
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	cmd.Stderr = cmd.Stdout // 合并，避免两个 reader goroutine
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start sing-box: %w", err)
+	}
+	s.cmd = cmd
+	go s.pump(stdout)
+	go func(c *exec.Cmd) {
+		err := c.Wait()
+		s.mu.Lock()
+		s.cmd = nil
+		s.mu.Unlock()
+		if s.onExit != nil {
+			s.onExit(err)
+		}
+	}(cmd)
+	return nil
+}
+
+// pump 用固定大小 scanner 读取，超长行截断而不是扩容。
+// 每行只进 ring buffer，不写文件、不写 channel（无消费者时不阻塞）。
+func (s *Supervisor) pump(r io.Reader) {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 4096), 16<<10)
+	for sc.Scan() {
+		s.ring.Push(LogLine{
+			At:  time.Now(),
+			Raw: sc.Text(),
+		})
+	}
+}</code></pre>
+      </div>
+
+      <h3>6.4 Clash API 反代 + 服务端节流 · <span style="color:var(--text-4);font-weight:400">约束 三-3、六 · WebSocket</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/httpapi/clashproxy.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">// connections 把 Clash API 的 WS 转给浏览器，但做三件事：
+// 裁剪字段、截断 200 条、2 秒节流（只转发最新帧）。
+// 约束 三-3：后端不做业务重写；约束 四-P1：连接列表不落盘。
+func (h *Handler) connections(w http.ResponseWriter, r *http.Request) {
+	up, err := h.clash.DialWS(r.Context(), "/connections")
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "clash_unreachable", err.Error())
+		return
+	}
+	defer up.Close()
+
+	down, err := h.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer down.Close()
+
+	var latest atomic.Pointer[[]byte]
+	go func() { // 读取循环：只保留最新一帧，中间帧直接丢弃
+		for {
+			_, msg, err := up.ReadMessage()
+			if err != nil {
+				return
+			}
+			frame := trimConnections(msg, 200)
+			latest.Store(&frame)
+		}
+	}()
+
+	ticker := time.NewTicker(2 * time.Second) // 弱 CPU 上 2s 足够
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			if p := latest.Swap(nil); p != nil {
+				if err := down.WriteMessage(websocket.TextMessage, *p); err != nil {
+					return
+				}
+			}
+		}
+	}
+}
+
+// trimConnections 只保留前端真正渲染的字段，体积约为原始帧的 1/4。
+func trimConnections(raw []byte, limit int) []byte {
+	var in struct {
+		Connections []struct {
+			ID    string   `json:"id"`
+			Meta  struct {
+				Host       string `json:"host"`
+				DestinationIP string `json:"destinationIP"`
+				Network    string `json:"network"`
+			} `json:"metadata"`
+			Chains []string `json:"chains"`
+			Rule   string   `json:"rule"`
+			Upload   int64  `json:"upload"`
+			Download int64  `json:"download"`
+			Start    string `json:"start"`
+		} `json:"connections"`
+	}
+	if json.Unmarshal(raw, &in) != nil {
+		return []byte(`{"connections":[]}`)
+	}
+	if len(in.Connections) > limit {
+		in.Connections = in.Connections[:limit]
+	}
+	out, _ := json.Marshal(in) // 复用 encoder 可进一步省分配
+	return out
+}</code></pre>
+      </div>
+
+      <h3>6.5 订阅拉取：原始响应不落盘 · <span style="color:var(--text-4);font-weight:400">约束 四 · P0 订阅</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/service/subscription/fetch.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+        <pre><code data-lang="go">// Refresh 拉取订阅并解析为 outbound 片段。
+// body 只在本次调用内存在：解析完即被 GC，不写磁盘、不进缓存。
+func (s *Service) Refresh(ctx context.Context, id string) (Result, error) {
+	sub, err := s.store.Get(id)
+	if err != nil {
+		return Result{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sub.URL, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	req.Header.Set("User-Agent", "sing-box-panel/0.9")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return Result{}, fmt.Errorf("fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Result{}, fmt.Errorf("upstream %d", resp.StatusCode)
+	}
+
+	// 8MB 硬上限：恶意订阅不能把 256MB 的设备打爆。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return Result{}, err
+	}
+
+	nodes, err := parse(body, resp.Header.Get("Content-Type"))
+	if err != nil {
+		return Result{}, fmt.Errorf("parse: %w", err)
+	}
+
+	// 只持久化解析结果；sub.URL 加密后写回 subs.json。
+	if err := s.store.SaveNodes(id, nodes); err != nil {
+		return Result{}, err
+	}
+	return Result{Count: len(nodes)}, nil // body 到此为止
+}</code></pre>
+      </div>
+
+      <h3>6.6 Svelte · API 客户端 <span style="color:var(--text-4);font-weight:400">约束 六（API 层与视图分离）</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">web/src/lib/api.ts</span><span class="lang">ts</span><button class="copy">复制</button></div>
+        <pre><code data-lang="ts">export class ApiError extends Error {
+  constructor(
+    public status: number,
+    public code: string,
+    public detail?: string
+  ) {
+    super(code);
+  }
+}
+
+let token = localStorage.getItem('sb_token') ?? '';
+export const setToken = (t: string) => {
+  token = t;
+  localStorage.setItem('sb_token', t);
+};
+
+async function req&lt;T&gt;(path: string, init: RequestInit = {}): Promise&lt;T&gt; {
+  const res = await fetch(path, {
+    ...init,
+    headers: {
+      'content-type': 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...init.headers
+    }
+  });
+
+  if (res.status === 401) {
+    token = '';
+    localStorage.removeItem('sb_token');
+    throw new ApiError(401, 'unauthorized');
+  }
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body.error ?? 'unknown', body.detail);
+  }
+  return res.status === 204 ? (undefined as T) : res.json();
+}
+
+export const api = {
+  status: () => req&lt;Status&gt;('/api/v1/status'),
+  nodes: () => req&lt;Node[]&gt;('/api/v1/nodes'),
+  delay: (tags: string[]) =>
+    req&lt;Record&lt;string, number&gt;&gt;('/api/v1/nodes/delay', {
+      method: 'POST',
+      body: JSON.stringify({ tags })
+    }),
+  validate: () => req&lt;CheckResult&gt;('/api/v1/config/validate', { method: 'POST' }),
+  apply: (raw: string) =>
+    req&lt;ApplyResult&gt;('/api/v1/config/apply', { method: 'POST', body: raw })
+};</code></pre>
+      </div>
+
+      <h3>6.7 Svelte · 节点 store（TTL + 并发测速）</h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">web/src/lib/stores/nodes.ts</span><span class="lang">ts</span><button class="copy">复制</button></div>
+        <pre><code data-lang="ts">import { writable, get } from 'svelte/store';
+import { api } from '$lib/api';
+
+export type Latency = { ms: number; at: number };
+const TTL = 5 * 60_000; // 约束 四-P0：延迟结果 5 分钟过期，且不落盘
+
+export const nodes = writable&lt;Node[]&gt;([]);
+export const latency = writable&lt;Record&lt;string, Latency&gt;&gt;({});
+
+export async function loadNodes() {
+  nodes.set(await api.nodes());
+}
+
+/** 前端也限制 3 并发，避免把弱 CPU 的请求队列打满；
+ *  服务端还有一层 semaphore(3) 兜底。 */
+export async function testAll(tags: string[]) {
+  const queue = [...tags];
+  const worker = async () => {
+    for (let tag = queue.shift(); tag; tag = queue.shift()) {
+      const started = Date.now();
+      const ms = await api.delayOne(tag);
+      latency.update((m) => ({ ...m, [tag]: { ms, at: started } }));
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+}
+
+/** 读取时顺手做过期判断，避免定时器在后台常驻。 */
+export function fresh(tag: string): number | undefined {
+  const hit = get(latency)[tag];
+  if (!hit) return undefined;
+  return Date.now() - hit.at > TTL ? undefined : hit.ms;
+}</code></pre>
+      </div>
+
+      <h3>6.8 Svelte · 代表性组件 <span style="color:var(--text-4);font-weight:400">约束 六（单文件组件职责单一）</span></h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">web/src/lib/components/NodeRow.svelte</span><span class="lang">svelte</span><button class="copy">复制</button></div>
+        <pre><code data-lang="svelte">&lt;script lang="ts"&gt;
+  import type { Node } from '$lib/types';
+
+  let {
+    node,
+    latency,
+    onToggle
+  }: {
+    node: Node;
+    latency?: number;
+    onToggle: (id: string, next: boolean) =&gt; void;
+  } = $props();
+
+  let tone = $derived(
+    latency === undefined ? 'none'
+      : latency &lt; 80 ? 'good'
+      : latency &lt; 150 ? 'ok'
+      : latency &lt; 250 ? 'mid'
+      : 'bad'
+  );
+&lt;/script&gt;
+
+&lt;tr class="row" class:disabled={!node.enabled}&gt;
+  &lt;td&gt;
+    &lt;div class="name"&gt;
+      &lt;span class="region" data-region={node.region}&gt;{node.region.toUpperCase()}&lt;/span&gt;
+      &lt;div&gt;
+        &lt;div class="t"&gt;{node.name}&lt;/div&gt;
+        &lt;div class="s"&gt;{node.tag}&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/td&gt;
+
+  &lt;td&gt;&lt;span class="proto" data-proto={node.type}&gt;{node.type}&lt;/span&gt;&lt;/td&gt;
+  &lt;td class="ip"&gt;{node.server}&lt;/td&gt;
+  &lt;td class="lat {tone}"&gt;{latency === undefined ? '—' : `${latency} ms`}&lt;/td&gt;
+
+  &lt;td class="right"&gt;
+    &lt;button
+      class="switch"
+      class:on={node.enabled}
+      aria-pressed={node.enabled}
+      aria-label="启用 {node.name}"
+      onclick={() =&gt; onToggle(node.id, !node.enabled)}
+    &gt;&lt;/button&gt;
+  &lt;/td&gt;
+&lt;/tr&gt;
+
+&lt;style&gt;
+  .row { border-bottom: 1px solid var(--line); }
+  .row:hover { background: rgba(255, 255, 255, 0.022); }
+  .row.disabled { opacity: 0.45; }
+  .lat { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .lat.good { color: var(--lime); }
+  .lat.ok { color: var(--teal); }
+  .lat.mid { color: var(--amber); }
+  .lat.bad { color: var(--red); }
+  .lat.none { color: var(--text-4); }
+&lt;/style&gt;</code></pre>
+      </div>
+
+      <h3>6.9 Svelte · 页面装配（懒加载 + 危险操作二次确认）</h3>
+      <div class="code-block">
+        <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">web/src/routes/nodes/+page.svelte</span><span class="lang">svelte</span><button class="copy">复制</button></div>
+        <pre><code data-lang="svelte">&lt;script lang="ts"&gt;
+  import { onMount } from 'svelte';
+  import NodeRow from '$lib/components/NodeRow.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
+  import { nodes, latency, loadNodes, testAll } from '$lib/stores/nodes';
+
+  let query = $state('');
+  let testing = $state(false);
+  let pending = $state&lt;Node | null&gt;(null);
+
+  let shown = $derived(
+    $nodes.filter((n) =&gt; n.name.toLowerCase().includes(query.toLowerCase()))
+  );
+
+  onMount(loadNodes);
+
+  async function runTest() {
+    testing = true;
+    try {
+      await testAll(shown.map((n) =&gt; n.tag)); // 并发 3，服务端再兜底
+    } finally {
+      testing = false;
+    }
+  }
+&lt;/script&gt;
+
+&lt;div class="toolbar"&gt;
+  &lt;input class="search" bind:value={query} placeholder="搜索节点、协议或出口…" /&gt;
+  &lt;span class="hint"&gt;并发上限 3 · 结果缓存 300s&lt;/span&gt;
+  &lt;button class="btn primary" disabled={testing} onclick={runTest}&gt;
+    {testing ? '测速中…' : '全部测速'}
+  &lt;/button&gt;
+&lt;/div&gt;
+
+&lt;table&gt;
+  &lt;tbody&gt;
+    {#each shown as node (node.id)}
+      &lt;NodeRow {node} latency={$latency[node.tag]?.ms} onToggle={askToggle} /&gt;
+    {/each}
+  &lt;/tbody&gt;
+&lt;/table&gt;
+
+{#if pending}
+  &lt;ConfirmDialog
+    title="禁用这个节点？"
+    body={`${pending.name} 将从配置中移除，正在使用它的连接会回落到 urltest。`}
+    confirm="禁用"
+    onCancel={() =&gt; (pending = null)}
+    onConfirm={() =&gt; { applyToggle(pending!); pending = null; }}
+  /&gt;
+{/if}</code></pre>
+      </div>
+    </section>
+
+    <!-- ============================================================ 07 -->
+    <section id="risk">
+      <h2><span class="n">07</span>MT7981 上最容易 OOM / 启动失败的 5 个点</h2>
+
+      <p>256 MB 的机器上，真正危险的不是面板本身，而是<strong>面板允许用户打开的那些开关</strong>。
+      以下五条按发生概率排序，每条都给出可执行的数值与配置项。</p>
+
+      <div class="risk">
+        <div class="risk-hd"><span class="idx">R1</span><h4>tproxy 全量接管：单点就能吃掉 200 MB</h4><span class="tag">OOM</span></div>
+        <div class="risk-bd">
+          <p>社区实测：v2rayA 在 OpenWrt 上启用 tproxy 后 RSS 升至 <b>219 MB</b> 并触发 OOM，切回 redirect 后正常。
+          原因是 tproxy 需要 mangle 表 + 策略路由 + UDP conntrack，QUIC/P2P 场景下 conntrack 条目会指数增长。</p>
+          <p>本机预算：系统与 dnsmasq 约 60 MB、sing-box 约 40 MB、面板 14 MB，<b>可用余量仅 96 MB</b>。</p>
+          <div class="fix">
+            <b>规避</b>
+            <p>① 默认只提供 redirect；tproxy 必须二次确认并显示风险文案。<br>
+            ② 限制 conntrack 表：<code class="i">nf_conntrack_max=16384</code>，UDP 超时压到 30s。<br>
+            ③ 面板每 10s 读取 <code class="i">/proc/sys/net/netfilter/nf_conntrack_count</code>，超过 80% 自动降级回 redirect 并告警。</p>
+          </div>
+          <div class="code-block">
+            <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">/etc/sysctl.d/99-singbox.conf</span><span class="lang">sh</span><button class="copy">复制</button></div>
+            <pre><code data-lang="sh">net.netfilter.nf_conntrack_max = 16384
+net.netfilter.nf_conntrack_udp_timeout = 30
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
+# 不要为了 tproxy 调大 rmem，那会直接把内存送给 socket 缓冲
+net.core.rmem_max = 212992</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="risk">
+        <div class="risk-hd"><span class="idx">R2</span><h4>Geo 数据与 rule_set 全量加载：静默吃掉 20–60 MB</h4><span class="tag">OOM</span></div>
+        <div class="risk-bd">
+          <p>使用旧字段 <code class="i">geosite</code> / <code class="i">geoip</code> 时，sing-box 会把整个 <code class="i">geosite.db</code>（约 4.5 MB）
+          与 <code class="i">geoip.db</code>（约 5 MB）读入并解析成内存结构，峰值可放大到 <b>20–60 MB</b>。
+          叠加 <code class="i">cache_file.store_rdrc=true</code> 后，规则集缓存还会同时占内存和 flash。</p>
+          <div class="fix">
+            <b>规避</b>
+            <p>① 一律使用 <code class="i">rule_set</code> + <code class="i">format: binary</code>，只下载真正用到的 3–5 个集合（单个 300–900 KB）。<br>
+            ② 关闭 <code class="i">store_rdrc</code>，只保留 <code class="i">cache_file.enabled</code> 用于 selected outbound。<br>
+            ③ 面板只编辑规则条目，永远不把 Geo 数据传给前端解析。</p>
+          </div>
+          <div class="code-block">
+            <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">config.json · route.rule_set</span><span class="lang">json</span><button class="copy">复制</button></div>
+            <pre><code data-lang="json">{
+  "route": {
+    "rule_set": [
+      {
+        "tag": "geosite-cn",
+        "type": "remote",
+        "format": "binary",
+        "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
+        "download_detour": "proxy",
+        "update_interval": "7d"
+      }
+    ],
+    "rules": [{ "rule_set": ["geosite-cn"], "outbound": "direct" }]
+  },
+  "experimental": {
+    "cache_file": { "enabled": true, "store_rdrc": false }
+  }
+}</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="risk">
+        <div class="risk-hd"><span class="idx">R3</span><h4>Go 运行时没有内存上限：堆会翻倍</h4><span class="tag">OOM</span></div>
+        <div class="risk-bd">
+          <p>默认 <code class="i">GOGC=100</code> 意味着堆增长到上次 GC 后的 2 倍才回收。面板稳态堆 6.4 MB，
+          峰值可到 13 MB，加上 goroutine 栈、socket 缓冲与 mmap，RSS 轻松突破 25 MB——超出 20 MB 预算。</p>
+          <div class="fix">
+            <b>规避</b>
+            <p>① 启动时 <code class="i">debug.SetMemoryLimit(16 &lt;&lt; 20)</code>，并设 <code class="i">GOGC=40</code>。<br>
+            ② HTTP server 限死头部与超时；WS 每连接读缓冲 4 KB，写缓冲 4 KB。<br>
+            ③ JSON 序列化复用 <code class="i">sync.Pool</code> 的 buffer，避免每帧新分配。</p>
+          </div>
+          <div class="code-block">
+            <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">cmd/panel/main.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+            <pre><code data-lang="go">func main() {
+	// 约束 二：常驻内存 ≤ 20MB。软上限交给 runtime，
+	// 超限时 GC 会更激进，而不是被 OOM killer 直接杀掉。
+	debug.SetMemoryLimit(16 << 20)
+	debug.SetGCPercent(40)
+
+	srv := &amp;http.Server{
+		Addr:              cfg.Listen, // 默认 127.0.0.1:9090
+		Handler:           router,
+		ReadHeaderTimeout: 5 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
+}</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="risk">
+        <div class="risk-hd"><span class="idx">R4</span><h4>check 进程的瞬时内存 + 并发 apply</h4><span class="tag">OOM</span></div>
+        <div class="risk-bd">
+          <p><code class="i">sing-box check</code> 是独立进程，会完整加载配置（包括 rule_set），瞬时占用 <b>30–45 MB</b>。
+          如果它与正在运行的 core 叠加，再赶上一次订阅更新，256 MB 设备就会触发 OOM killer——
+          而 OOM killer 通常先杀内存占用最大的 sing-box，表现为「保存配置后代理挂了」。</p>
+          <div class="fix">
+            <b>规避</b>
+            <p>① apply 全程持有互斥锁，杜绝并发校验。<br>
+            ② 校验前读 <code class="i">/proc/meminfo</code> 的 <code class="i">MemAvailable</code>，低于 <b>48 MB</b> 直接拒绝并提示稍后再试。<br>
+            ③ check 子进程设 <code class="i">GOMEMLIMIT=32MiB</code>，并加 8s 超时。<br>
+            ④ 定时任务与手动保存共用同一把锁，不并行。</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="risk">
+        <div class="risk-hd"><span class="idx">R5</span><h4>check 通过 ≠ 能启动：五类运行时失败</h4><span class="tag">启动失败</span></div>
+        <div class="risk-bd">
+          <p>语法正确只代表 JSON 与字段合法。实际启动失败的高频原因：</p>
+          <ul>
+            <li><b>端口占用</b>：旧 sing-box 未退干净，12345 / 9091 仍被 listen。</li>
+            <li><b>TUN 冲突</b>：OpenWrt 已有 <code class="i">auto_route</code> 或策略路由，创建 <code class="i">singbox0</code> 失败。</li>
+            <li><b>缺少内核模块</b>：tproxy 需要 <code class="i">kmod-nft-tproxy</code>，check 阶段完全检测不到。</li>
+            <li><b>cache.db 不可写</b>：配置在只读分区，或目录属主不对。</li>
+            <li><b>nftables 表名冲突</b>：重复 <code class="i">table inet singbox</code> 导致规则下发失败。</li>
+          </ul>
+          <div class="fix">
+            <b>规避</b>
+            <p>① 启动前跑预检：<code class="i">ss -ltn</code> 探端口、<code class="i">nft list tables</code> 查表、<code class="i">lsmod</code> 查模块、试写目录。<br>
+            ② 启动后 3s 内请求 Clash API <code class="i">/version</code>，失败即回滚上一快照并重启。<br>
+            ③ supervisor 崩溃重启限流 3 次 / 10 分钟，超限停止并告警，避免死循环拖垮整机。</p>
+          </div>
+          <div class="code-block">
+            <div class="code-hd"><span class="dots"><i></i><i></i><i></i></span><span class="fn">internal/service/tproxy/probe.go</span><span class="lang">go</span><button class="copy">复制</button></div>
+            <pre><code data-lang="go">// Preflight 在写 nft 规则之前跑一遍，任何一项失败都不下发。
+func Preflight(ctx context.Context, iface string, port int) error {
+	if _, err := os.Stat("/sys/module/nft_tproxy"); err != nil {
+		return fmt.Errorf("kmod-nft-tproxy missing")
+	}
+	if listen, _ := portInUse(port); listen {
+		return fmt.Errorf("port %d already in use", port)
+	}
+	if ok, _ := tableExists(ctx, "inet", "singbox"); ok {
+		// 幂等：先删旧表，避免重复定义
+		if err := flushTable(ctx, "inet", "singbox"); err != nil {
+			return err
+		}
+	}
+	if avail := memAvailableMB(); avail &lt; 48 {
+		return fmt.Errorf("low memory: %d MB available", avail)
+	}
+	return nil
+}</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ 08 -->
+    <section id="nongoals">
+      <h2><span class="n">08</span>明确不做</h2>
+
+      <div class="compare">
+        <div class="cmp no">
+          <h4><svg width="13" height="13"><use href="#i-alert"/></svg>不做</h4>
+          <ul>
+            <li>自定义路由语言（RoutingA 式方言）</li>
+            <li>与官方 Dashboard 雷同的纯配置编辑器</li>
+            <li>任何内置数据库，包括 SQLite</li>
+            <li>前端解析 Geo 数据或全量日志</li>
+            <li>在后端硬编码 sing-box 字段映射</li>
+          </ul>
+        </div>
+        <div class="cmp yes">
+          <h4><svg width="13" height="13"><use href="#i-info"/></svg>改为</h4>
+          <ul>
+            <li>原生 <code class="i">route.rules</code> JSON + 图形化排序</li>
+            <li>订阅一站式 + 透明代理一键开关</li>
+            <li>JSON 文件 + tmp → fsync → rename</li>
+            <li>后端裁剪 + 2s 节流 + 50 行环形缓冲</li>
+            <li>模板合并，字段由用户维护</li>
+          </ul>
+        </div>
+      </div>
+
+      <p>理由很直接：<strong>每多一层抽象，就多一份与上游版本赛跑的维护成本。</strong>
+      sing-box 的配置格式仍在快速迭代，面板的价值在于把「重复的运维动作」变短，
+      而不是在它之上再造一门语言。</p>
+
+      <div class="note">
+        <svg width="15" height="15"><use href="#i-info"/></svg>
+        <div><b>验收口径：</b>在一台 256 MB 的 MT7981 上，同时跑 sing-box（redirect + 3 个 rule_set）、
+        dnsmasq 与面板，<code class="i">free -m</code> 的 available 应始终 ≥ 40 MB；
+        连续执行 20 次「保存配置」不出现 RSS 单调上涨；断电重启后配置不损坏、快照可回滚。</div>
+      </div>
+    </section>
+
+    <footer>
+      <span>sing-box panel · architecture note</span>
+      <span>web prototype: ../web/index.html</span>
+    </footer>
+  </article>
+</div>
+
+<script src="doc.js"></script>
+</body>
+</html>
