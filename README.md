@@ -49,6 +49,9 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 首次启动会生成 `data/settings.json`、`data/template.json`；`data/config.json` 要等你第一次在「配置」页
 保存应用（或触发一次需要重渲染的开关）后才会写入。
 
+下文出现的 `data/` 一律指 **`-data` 指定的数据目录**，不是系统根目录的 `/data`：
+Linux 默认 `/opt/sing-box-panel/data`，Windows 默认 exe 同级的 `panel-data\`。
+
 ## Windows
 
 ```powershell
@@ -194,7 +197,8 @@ systemctl daemon-reload && systemctl enable --now sing-box-panel
 仍回到 unit 中的地址；永久变更请改 unit 后执行 `systemctl daemon-reload && systemctl restart sing-box-panel`。
 
 unit 里的 `PANEL_TOKEN` / `PANEL_PASSWORD` 默认注释掉：不设置时面板首次启动会生成随机口令，
-写入 `data/initial-password`，避免把弱口令带上线。
+写入**数据目录**（`-data` 指定的那个目录，默认 `/opt/sing-box-panel/data`）下的 `initial-password`，
+避免把弱口令带上线。注意是数据目录里的 `data/`，不是系统根目录的 `/data`。
 
 ## 界面
 
