@@ -287,7 +287,8 @@ func parseURI(s string) (model.Node, error) {
 	q := u.Query()
 
 	n := model.Node{Name: name, Server: u.Hostname(), Port: port, Region: DetectRegion(name)}
-	ob := map[string]any{"type": u.Scheme, "server": n.Server, "server_port": port}
+	// scheme 不能直接当 outbound type：ss 在 sing-box 里叫 shadowsocks
+	ob := map[string]any{"type": model.NormalizeOutboundType(u.Scheme), "server": n.Server, "server_port": port}
 
 	switch u.Scheme {
 	case "vless":

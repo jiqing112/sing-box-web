@@ -104,6 +104,7 @@
       <div class="page-title-sm" id="crumbTitle">概览</div>
       <div class="crumb" id="crumbPath">/ <b>控制台</b></div>
       <div class="topbar-right">
+        <button class="btn ghost sm topbar-restart" id="topRestartBtn" data-action="restart" title="重启核心"><svg width="13" height="13"><use href="#i-refresh"/></svg><span>重启核心</span></button>
         <span class="chip" id="topStatus"><i class="dot"></i> 检测中</span>
         <span class="chip" id="topVersion" style="display:none"></span>
         <button class="theme-toggle" id="themeToggle" title="切换深浅色" aria-label="切换深浅色">
@@ -135,14 +136,10 @@
             <div class="hero-main">
               <div class="hero-body">
                 <div class="hero-left">
-                  <div class="hero-top">
-                    <span class="badge lime" id="heroBadge"><i class="dot"></i> SING-BOX CORE</span>
-                    <span class="badge mono" id="heroVersion">—</span>
-                    <span class="badge" id="heroCfgVer">配置 —</span>
-                  </div>
                   <div class="hero-status">
                     <span class="glyph" id="heroGlyph"><svg width="18" height="18"><use href="#i-zap"/></svg></span>
                     <span id="heroStatus">检测中</span>
+                    <span class="badge mono lime" id="heroExitIp" style="display:none;margin-left:10px;height:22px"></span>
                   </div>
                   <div class="hero-sub">
                     <span id="heroUptime">—</span><span class="sep"></span>
@@ -155,13 +152,7 @@
                     <div><div class="k">Clash API</div><div class="v" id="heroApi">127.0.0.1:9091</div></div>
                     <div><div class="k">入站</div><div class="v" id="heroIn">mixed :7890</div></div>
                   </div>
-                  <div class="hero-actions">
-                    <button class="btn" data-action="restart"><svg width="12" height="12"><use href="#i-refresh"/></svg>重启核心</button>
-                    <button class="btn ghost" data-goto="service"><svg width="12" height="12"><use href="#i-terminal"/></svg>查看日志</button>
-                    <button class="btn ghost" data-goto="config"><svg width="12" height="12"><use href="#i-code"/></svg>编辑配置</button>
-                  </div>
                 </div>
-
                 <div class="flow">
                   <div class="flow-hd">流量路径 · live</div>
                   <div class="flow-step"><span class="k">ingress</span><span class="v" id="flowIn">mixed-in</span><span class="tag">127.0.0.1</span></div>
@@ -169,24 +160,6 @@
                   <div class="flow-step"><span class="k">outbound</span><span class="v">proxy → auto</span><span class="tag">urltest</span></div>
                   <div class="flow-step live"><span class="k">active</span><span class="v" id="flowNow" style="color:var(--lime)">—</span><span class="tag" id="flowNowMs" style="color:var(--lime)">—</span></div>
                 </div>
-              </div>
-            </div>
-
-            <div class="card mem-card">
-              <div class="card-hd" style="padding:0 0 6px;border:none"><h3 style="font-size:11px;color:var(--text-3);letter-spacing:.06em;text-transform:uppercase">面板常驻内存</h3></div>
-              <div class="mem-ring">
-                <svg width="118" height="118" viewBox="0 0 118 118">
-                  <circle cx="59" cy="59" r="48" fill="none" stroke="#1a1e24" stroke-width="7"/>
-                  <circle id="memArc" cx="59" cy="59" r="48" fill="none" stroke="url(#memGrad)" stroke-width="7" stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="301.6"/>
-                  <defs><linearGradient id="memGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#52d9c4"/><stop offset="100%" stop-color="#c6ff4d"/></linearGradient></defs>
-                </svg>
-                <div class="mem-center"><div class="n" id="memUsed">—<span> MB</span></div><div class="l">/ 20 MB 预算</div></div>
-              </div>
-              <div class="mem-legend">
-                <div><i class="sw" style="background:#c6ff4d"></i>面板 RSS <b id="memPanel">—</b></div>
-                <div><i class="sw" style="background:#52d9c4"></i>核心 RSS <b id="memCore">—</b></div>
-                <div><i class="sw" style="background:#8f7dff"></i>静态资源 <b>embed</b></div>
-                <div><i class="sw" style="background:#2b313a"></i>预算余量 <b id="memLeft">—</b></div>
               </div>
             </div>
           </div>
@@ -312,7 +285,7 @@
       <section class="page" id="page-config">
         <div class="wrap">
           <div class="page-head">
-            <div><h1>配置</h1><p>模板 + 节点片段渲染，写入前必过 <code style="font-family:var(--mono);font-size:11px;color:var(--text-2)">sing-box check</code>。保留最近 3 个快照。</p></div>
+            <div><h1>配置</h1><p>模板 + 节点片段渲染，写入前必过 <code id="cfgCheckCmd" style="font-family:var(--mono);font-size:11px;color:var(--text-2)">sing-box check</code>。保留最近 3 个快照。</p></div>
             <div class="page-actions">
               <button class="btn" id="renderBtn"><svg width="13" height="13"><use href="#i-layers"/></svg>重新渲染</button>
               <button class="btn" id="validateBtn"><svg width="13" height="13"><use href="#i-check"/></svg>校验</button>
@@ -323,20 +296,20 @@
           <div class="grid-2">
             <div class="card" style="overflow:hidden">
               <div class="tabs">
-                <button class="tab on">原始 JSON</button>
+                <button class="tab on" id="cfgTabName">原始 JSON</button>
                 <div style="margin-left:auto;display:flex;align-items:center;gap:8px;padding:6px 4px">
-                  <span class="badge mono">config.json</span>
+                  <span class="badge mono" id="cfgFileName">config.json</span>
                   <span class="badge lime" id="dirtyBadge" style="display:none">未保存</span>
                 </div>
               </div>
               <div class="editor">
                 <div class="editor-scroll"><textarea id="cfgEditor" spellcheck="false" placeholder="点击「重新渲染」从模板 + 节点生成配置"></textarea></div>
                 <div class="editor-foot">
-                  <span>UTF-8</span><span>·</span><span>JSON</span><span>·</span><span id="codeStat">行 —</span>
+                  <span>UTF-8</span><span>·</span><span id="cfgLang">JSON</span><span>·</span><span id="codeStat">行 —</span>
                   <span style="margin-left:auto" id="codeSrc">—</span>
                 </div>
               </div>
-              <div class="check-out" id="checkOut"><div class="dim">$ sing-box check -c config.json</div><div class="dim">尚未校验</div></div>
+              <div class="check-out" id="checkOut"><div class="dim" id="checkCmd">$ sing-box check -c config.json</div><div class="dim">尚未校验</div></div>
             </div>
 
             <div class="stack-12">
@@ -351,9 +324,9 @@
               <div class="card">
                 <div class="card-hd"><h3>渲染来源</h3></div>
                 <div class="card-bd" style="display:flex;flex-direction:column;gap:10px">
-                  <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="badge mono">template.json</span><span style="color:var(--text-3)">inbounds / dns / route 骨架</span></div>
+                  <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="badge mono" id="tplFileName">template.json</span><span style="color:var(--text-3)" id="tplSkeleton">inbounds / dns / route 骨架</span></div>
                   <div style="display:flex;align-items:center;gap:8px;font-size:11.5px"><span class="badge mono">nodes-*.json</span><span style="color:var(--text-3)" id="srcNodes">—</span></div>
-                  <div class="callout" style="margin-top:2px"><svg width="14" height="14"><use href="#i-info"/></svg><div>后端不硬编码字段映射：模板由用户维护，面板只做 <b>JSON 合并 + 占位符替换</b>。</div></div>
+                  <div class="callout" style="margin-top:2px"><svg width="14" height="14"><use href="#i-info"/></svg><div>后端不硬编码字段映射：模板由用户维护，面板只做 <b id="tplMergeNote">JSON 合并 + 占位符替换</b>。</div></div>
                 </div>
               </div>
             </div>
@@ -397,14 +370,6 @@
               </div>
               <div style="font-size:10.5px;color:var(--text-4)" id="svcCheckNote">—</div>
             </div>
-            <div class="card svc-card" id="svcTunCard">
-              <div class="stat-label">TUN 模式</div>
-              <div style="display:flex;align-items:center;gap:8px;margin-top:9px">
-                <span style="font-size:17px;font-weight:600;letter-spacing:-.02em" id="tunState">—</span>
-                <button class="switch" id="tunSwitch" style="margin-left:auto"></button>
-              </div>
-              <div style="font-size:10.5px;color:var(--text-4)" id="tunNote">虚拟网卡接管整机流量（含不走系统代理的程序）</div>
-            </div>
           </div>
 
           <div class="card" style="margin-bottom:12px">
@@ -419,8 +384,8 @@
               </div>
               <div style="display:flex;align-items:center;gap:10px;padding-top:12px">
                 <div style="flex:1;min-width:0">
-                  <div style="font-size:12.5px;color:var(--text)">sing-box 开机自启</div>
-                  <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">面板启动时自动拉起 sing-box 核心；面板本身不自启时，开机后核心也不会运行</div>
+                  <div style="font-size:12.5px;color:var(--text)"><span id="asCoreLabel">sing-box</span> 开机自启</div>
+                  <div style="font-size:10.5px;color:var(--text-4);margin-top:2px" id="asCoreNote">面板启动时自动拉起内核；面板本身不自启时，开机后核心也不会运行</div>
                 </div>
                 <button class="switch" id="asCoreSwitch"></button>
               </div>
@@ -448,81 +413,96 @@
           <div class="grid-2">
             <div class="stack-12">
               <div class="card">
-                <div class="card-hd"><h3>路由模式</h3><span class="sub">TUN / 透明代理 / 局域网代理共用</span><div class="right"><span class="badge lime" id="routeBadge">规则分流</span></div></div>
+                <div class="card-hd"><h3>路由模式</h3><div class="right"><span class="badge lime" id="routeBadge">规则分流</span></div></div>
                 <div class="card-bd">
-                  <div class="seg route-seg" id="routeSeg">
+                  <div class="seg-tabs" id="routeSeg">
                     <button data-mode="rule" class="on">规则分流</button>
                     <button data-mode="global">全局代理</button>
                     <button data-mode="direct">全局直连</button>
                   </div>
                   <div id="routeDesc" style="font-size:11.5px;color:var(--text-3);line-height:1.7;margin-top:12px">国内域名 / IP 直连，其余流量走节点；推荐日常使用。</div>
-                  <div class="callout" style="margin-top:12px">
-                    <svg width="15" height="15"><use href="#i-info"/></svg>
-                    <div>切换会重新渲染配置并重启核心（约 1 秒），失败自动回滚；对 TUN、透明代理、局域网代理与系统代理同时生效。</div>
-                  </div>
                 </div>
               </div>
 
-              <div class="card" id="tpLinuxState">
-                <div class="card-hd"><h3>接管状态</h3><div class="right"><span class="badge amber" id="tproxyBadge">未启用</span></div></div>
+              <div class="card">
+                <div class="card-hd"><h3>流量接管</h3><span class="sub" id="tpTakeoverSub">两个通道独立开关，可同时启用</span></div>
                 <div class="card-bd">
-                  <div style="display:flex;align-items:center;gap:10px;padding:2px 0 14px;border-bottom:1px solid var(--line)">
-                    <span style="font-size:26px;font-weight:620;letter-spacing:-.03em;color:var(--text-3)" id="tpState">未接管</span>
-                    <span class="badge mono" id="tpMode">redirect</span>
-                    <button class="switch" id="tproxySwitch" style="margin-left:auto"></button>
+                  <div style="display:flex;justify-content:space-between;font-size:11.5px;padding-bottom:12px;border-bottom:1px solid var(--line)">
+                    <span style="color:var(--text-3)">核心状态</span><span class="badge mono" id="tpCore">—</span>
                   </div>
-                  <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">核心状态</span><span class="badge mono" id="tpCore">—</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">nftables 规则</span><span class="badge" id="tpRules">0 条</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3);flex:none">接管网段</span><span class="badge mono" id="tpCidrs" style="white-space:normal;text-align:right">—</span></div>
-                    <div style="display:flex;align-items:center;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--line)">
+
+                  <!-- redirect（仅 Linux）：接管局域网设备 -->
+                  <div id="redirectRow" style="padding-top:14px">
+                    <div style="display:flex;align-items:center;gap:10px">
                       <div style="flex:1;min-width:0">
-                        <div style="font-size:12.5px;color:var(--text)">同时接管本机流量</div>
-                        <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">服务器自己发起的 TCP 也走代理；自动排除面板进程，避免回环</div>
+                        <div style="display:flex;align-items:center;gap:8px">
+                          <b style="font-size:13px">nftables redirect</b>
+                          <span class="badge mono" id="tpMode">redirect</span>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-4);margin-top:3px">局域网设备的 TCP 经本机交给内核；客户端网关指向本机即可，无需安装任何东西</div>
                       </div>
-                      <button class="switch" id="localSwitch"></button>
+                      <span class="badge amber" id="tproxyBadge">未启用</span>
+                      <button class="switch" id="tproxySwitch"></button>
                     </div>
-                    <div style="display:flex;align-items:center;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--line)">
-                      <div style="flex:1;min-width:0">
-                        <div style="font-size:12.5px;color:var(--text)">接管局域网 DNS</div>
-                        <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">把 LAN 的 53 端口劫持给 sing-box；客户端用 .1 的 DNS 也会被改写，本地域名可能失效</div>
+                    <div id="tpRedirectGrid" style="display:none;margin-top:4px">
+                      <div style="display:flex;flex-direction:column;gap:10px;margin-top:10px">
+                        <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">nftables 规则</span><span class="badge" id="tpRules">0 条</span></div>
+                        <div style="display:flex;justify-content:space-between;font-size:11.5px;gap:12px"><span style="color:var(--text-3);flex:none">接管网段</span><span class="badge mono" id="tpCidrs" style="white-space:normal;text-align:right">—</span></div>
+                        <div style="display:flex;align-items:center;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--line)">
+                          <div style="flex:1;min-width:0">
+                            <div style="font-size:12.5px;color:var(--text)">同时接管本机流量</div>
+                            <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">服务器自己发起的 TCP 也走代理；自动排除面板进程，避免回环</div>
+                          </div>
+                          <button class="switch" id="localSwitch"></button>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:10px;margin-top:4px;padding-top:12px;border-top:1px solid var(--line)">
+                          <div style="flex:1;min-width:0">
+                            <div style="font-size:12.5px;color:var(--text)">接管局域网 DNS</div>
+                            <div style="font-size:10.5px;color:var(--text-4);margin-top:2px">把 LAN 的 53 端口劫持给当前内核；客户端用 .1 的 DNS 也会被改写，本地域名可能失效</div>
+                          </div>
+                          <button class="switch" id="dnsSwitch"></button>
+                        </div>
                       </div>
-                      <button class="switch" id="dnsSwitch"></button>
                     </div>
                   </div>
-                  <div class="callout" id="tpNote" style="margin-top:14px">
+
+                  <div id="redirectDivider" style="height:1px;background:var(--line);margin:14px 0"></div>
+
+                  <!-- TUN：两个平台都有 -->
+                  <div id="tunRow">
+                    <div style="display:flex;align-items:center;gap:10px">
+                      <div style="flex:1;min-width:0">
+                        <div style="display:flex;align-items:center;gap:8px">
+                          <b style="font-size:13px">TUN 虚拟网卡</b>
+                          <span class="badge mono" id="tunDevName">singbox-tun</span>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-4);margin-top:3px">本机全部流量进入内核（含不走系统代理的程序）；需要 root / 管理员</div>
+                      </div>
+                      <span class="badge amber" id="tunBadge">未启用</span>
+                      <button class="switch" id="tunSwitch2"></button>
+                    </div>
+                    <div id="tpTunGrid" style="display:none;margin-top:10px;padding-top:12px;border-top:1px solid var(--line)">
+                      <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">接管范围</span><span class="badge">整机全部流量</span></div>
+                      <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-top:10px"><span style="color:var(--text-3)">分流规则</span><span class="badge">跟随「路由模式」设置</span></div>
+                      <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-top:10px"><span style="color:var(--text-3)">权限要求</span><span class="badge" id="tunAdmin">管理员身份运行</span></div>
+                    </div>
+                  </div>
+
+                  <div class="callout" style="margin-top:14px">
                     <svg width="15" height="15"><use href="#i-info"/></svg>
-                    <div><b>redirect 只接管 TCP</b>，目标为内网的流量直接放行；QUIC 会回退到 TCP。局域网设备无需任何配置即可生效（前提是网关指向本机）。</div>
+                    <div id="tpTakeoverNote">redirect 只接管 TCP，目标为内网的流量直接放行；两个通道可同时开启——本机流量走 TUN，局域网设备走 redirect。切换任意开关都会重新渲染配置并重启核心（约 1 秒），失败自动回滚。</div>
                   </div>
                 </div>
               </div>
-
-              <div class="card" id="tpWinState" style="display:none">
-                <div class="card-hd"><h3>TUN 接管状态</h3><div class="right"><span class="badge amber" id="tunBadge">未启用</span></div></div>
-                <div class="card-bd">
-                  <div style="display:flex;align-items:center;gap:10px;padding:2px 0 14px;border-bottom:1px solid var(--line)">
-                    <span style="font-size:26px;font-weight:620;letter-spacing:-.03em;color:var(--text-3)" id="tunState2">未启用</span>
-                    <span class="badge mono">singbox-tun</span>
-                    <button class="switch" id="tunSwitch2" style="margin-left:auto"></button>
-                  </div>
-                  <div style="display:flex;flex-direction:column;gap:10px;margin-top:14px">
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">接管范围</span><span class="badge">整机全部流量</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">权限要求</span><span class="badge" id="tunAdmin">管理员身份运行</span></div>
-                    <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">CN 流量</span><span class="badge lime">geosite 规则直连</span></div>
-                  </div>
-                  <div class="callout" id="tunNote2" style="margin-top:14px">
-                    <svg width="15" height="15"><use href="#i-info"/></svg>
-                    <div>开启后整机流量经 <b>auto_route</b> 进入 sing-box，包括不走系统代理的程序；开关会重新渲染配置并重启核心，失败自动回滚。</div>
-                  </div>
-                </div>
-              </div>
-
             </div>
+
             <div class="stack-12">
-              <div class="card" id="tpLinuxPreview">
-                <div class="card-hd"><h3>nftables 规则预览</h3><span class="sub" id="tpPreviewNote">当前生效</span></div>
-                <div class="card-bd flush">
-                  <div class="rule-code" style="border-radius:0 0 14px 14px;max-height:460px;overflow:auto"><span class="cm">#!/usr/sbin/nft -f</span>
+              <div class="card" id="nftPreview">
+                <div class="card-hd"><h3>nftables 规则预览</h3><span class="sub" id="tpPreviewNote">启用后下发</span></div>
+                <div class="card-bd" style="padding:0">
+                  <details>
+                    <summary style="padding:12px 16px;cursor:pointer;font-size:12px;color:var(--text-3);user-select:none">展开规则内容</summary>
+                    <div class="rule-code" style="border-radius:0;max-height:460px;overflow:auto"><span class="cm">#!/usr/sbin/nft -f</span>
 <span class="kw">table</span> inet singbox {
   <span class="kw">set</span> local_nets { <span class="kw">type</span> ipv4_addr; flags interval;
     elements = { <span class="str">10.0.0.0/8</span>, <span class="str">172.16.0.0/12</span>, <span class="str">192.168.0.0/16</span> } }
@@ -542,6 +522,7 @@
     meta l4proto tcp <span class="kw">redirect to</span> :<span class="str">12345</span>
   }
 }</div>
+                  </details>
                 </div>
               </div>
 
@@ -550,7 +531,7 @@
                 <div class="card-bd" style="display:flex;flex-direction:column">
                   <div style="display:flex;gap:10px">
                     <span class="badge lime" style="flex:none;height:20px">TUN</span>
-                    <div style="font-size:11.5px;line-height:1.6;color:var(--text-2)">虚拟网卡三层接管，<b>所有程序</b>的流量都进 sing-box（包括不遵循系统代理设置的）；CN 流量按 geosite 直连。</div>
+                    <div style="font-size:11.5px;line-height:1.6;color:var(--text-2)">虚拟网卡三层接管，<b>所有程序</b>的流量都进当前内核（包括不遵循系统代理设置的）。</div>
                   </div>
                   <div style="display:flex;gap:10px;padding-top:12px;margin-top:12px;border-top:1px solid var(--line)">
                     <span class="badge" style="flex:none;height:20px">系统代理</span>
@@ -709,6 +690,17 @@
               </div>
             </div>
           </div>
+          <div class="card" style="margin-bottom:16px">
+            <div class="card-hd"><h3>内核</h3><span class="sub">切换会重新渲染配置并重启核心</span><div class="right"><span class="badge lime" id="engineBadge">—</span></div></div>
+            <div class="card-bd">
+              <div class="seg-tabs" id="engineSeg">
+                <button data-engine="sing-box">sing-box</button>
+                <button data-engine="mihomo">mihomo</button>
+              </div>
+              <div id="engineNote" style="font-size:11.5px;color:var(--text-3);line-height:1.7;margin-top:12px">正在读取内核状态…</div>
+              <div id="engineDetail" style="display:flex;flex-direction:column;gap:6px;margin-top:10px"></div>
+            </div>
+          </div>
           <div class="grid-2b">
             <div class="card">
               <div class="card-hd"><h3>运行参数</h3></div>
@@ -729,9 +721,9 @@
               <div class="card-hd"><h3>关于</h3></div>
               <div class="card-bd" style="display:flex;flex-direction:column;gap:12px">
                 <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">面板版本</span><span class="badge mono" id="setPanelVer">—</span></div>
-                <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">sing-box</span><span class="badge mono" id="setSbVer">—</span></div>
+                <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)" id="setEngineLabel">sing-box</span><span class="badge mono" id="setSbVer">—</span></div>
                 <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">运行平台</span><span class="badge mono" id="setPlatform">—</span></div>
-                <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">存储</span><span class="badge mono">JSON + rename</span></div>
+                <div style="display:flex;justify-content:space-between;font-size:11.5px"><span style="color:var(--text-3)">存储</span><span class="badge mono" id="setStoreFmt">JSON + rename</span></div>
               </div>
             </div>
           </div>

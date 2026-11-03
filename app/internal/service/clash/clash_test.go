@@ -54,3 +54,23 @@ func TestTrimConnectionsInvalidJSON(t *testing.T) {
 		t.Fatalf("out = %s", out)
 	}
 }
+
+// 切换内核后必须清掉延迟缓存：sing-box 与 mihomo 的 delay 测量口径不同，
+// 同一节点实测可差 4~6 倍，沿用旧值会让人误判线路质量。
+func TestResetDelays(t *testing.T) {
+	c := New("127.0.0.1:9091")
+	c.storeDelay("🇯🇵Japan 01", 137)
+	c.storeDelay("🇺🇸United States 01", 149)
+	if n := len(c.Delays()); n != 2 {
+		t.Fatalf("delays = %d, want 2", n)
+	}
+	c.ResetDelays()
+	if n := len(c.Delays()); n != 0 {
+		t.Fatalf("ResetDelays 后仍有 %d 条缓存", n)
+	}
+	// 清空后还能继续写入，不能把 map 置成 nil
+	c.storeDelay("🇯🇵Japan 01", 594)
+	if n := len(c.Delays()); n != 1 {
+		t.Fatalf("重新写入后 delays = %d, want 1", n)
+	}
+}

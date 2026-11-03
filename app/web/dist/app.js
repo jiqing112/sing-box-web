@@ -10,6 +10,7 @@ const state = {
   token: localStorage.getItem('sb_token') || '',
   authRequired: true,
   status: null,
+  engine: null,
   subs: [],
   nodes: [],
   delays: {},
@@ -32,6 +33,20 @@ function isLinux() {
   const p = state.status && state.status.platform;
   return !p || p === 'linux';
 }
+
+// 当前内核：sing-box（默认）或 mihomo。两个内核的配置格式、文件名、
+// 校验命令都不同，前端所有相关文案都从这里取，避免页面里写死 sing-box。
+function eng() { return (state.status && state.status.engine) || 'sing-box'; }
+function engIsMihomo() { return eng() === 'mihomo'; }
+function engFile() { return engIsMihomo() ? 'config.yaml' : 'config.json'; }
+function engLang() { return engIsMihomo() ? 'YAML' : 'JSON'; }
+function engCheckCmd() {
+  return engIsMihomo() ? '$ mihomo -t -d <data> -f config.yaml' : '$ sing-box check -c config.json';
+}
+// 内核展示名（状态接口已带 engine_label，缺省时本地兜底）
+function engLabel() { return (state.status && state.status.engine_label) || (engIsMihomo() ? 'Mihomo' : 'sing-box'); }
+// TUN 虚拟网卡名，两个内核不同，用于文案与提示
+function engTunDev() { return engIsMihomo() ? 'mihomo-tun' : 'singbox-tun'; }
 
 /* ------------------------------------------------------------ api */
 
@@ -285,10 +300,12 @@ async function boot() {
   loadTproxy();
   loadLanProxy();
   loadTun();
+  loadExitIp();
   loadAutostart();
   loadRouting();
+  loadEngine();
   pollTimers.forEach(clearInterval);
-  pollTimers = [setInterval(pollStatus, 5000), setInterval(loadLogs, 3000)];
+  pollTimers = [setInterval(pollStatus, 5000), setInterval(pollLogs, 3000)];
 }
 
 async function pollStatus() {
@@ -296,6 +313,7 @@ async function pollStatus() {
     state.status = await api('/api/v1/status');
     renderStatus();
     loadTun();
+    loadExitIp();
     if (state.lanproxy) renderLanProxyStats(state.lanproxy);
   } catch (e) { /* ignore transient */ }
 }
@@ -323,6 +341,17 @@ async function loadLogs() {
   renderLogs();
 }
 
+// 日志只在「看得到日志框」的页面里轮询：/logs 每次最多返回 400 行，
+// 在别的页面、或标签页切到后台时继续拉，纯粹是给 GC 制造垃圾。
+function logsVisible() {
+  if (document.visibilityState !== 'visible') return false;
+  return state.page === 'dashboard' || state.page === 'service';
+}
+
+function pollLogs() {
+  if (logsVisible()) loadLogs();
+}
+
 /* ------------------------------------------------------------ render: status */
 
 function renderStatus() {
@@ -340,8 +369,6 @@ function renderStatus() {
   $('#heroGlyph').style.background = running ? 'var(--lime-soft)' : 'rgba(255,111,97,.1)';
   $('#heroGlyph').style.color = running ? 'var(--lime)' : 'var(--red)';
   $('#heroGlyph').style.borderColor = running ? 'var(--lime-line)' : 'rgba(255,111,97,.3)';
-  $('#heroVersion').textContent = s.version || 'sing-box';
-  $('#heroCfgVer').textContent = `配置 v${s.config_version}`;
   $('#heroUptime').textContent = fmtUptime(s.uptime);
   $('#heroPid').textContent = s.pid ? `PID ${s.pid}` : 'PID —';
   $('#heroCheck').textContent = s.last_check_at
@@ -355,20 +382,12 @@ function renderStatus() {
   $('#mixedHint').textContent = `${mixedListen}:${mixedPort}`;
 
   $('#dashDesc').textContent = running
-    ? `${s.version || 'sing-box'} 正在运行，${s.enabled} 个出站节点已下发，配置版本 v${s.config_version}。`
+    ? `${s.version || eng()} 正在运行，${s.enabled} 个出站节点已下发，配置版本 v${s.config_version}。`
     : '核心未运行。请到「服务」页启动，或先到「配置」页生成并下发配置。';
 
-  // memory
+  // memory（首页的内存环已移除，只保留设置页与「服务」页的两处数字）
   const panelMB = (s.panel_rss || 0) / 1048576;
   const coreMB = (s.rss || 0) / 1048576;
-  $('#memUsed').innerHTML = `${panelMB.toFixed(1)}<span> MB</span>`;
-  $('#memPanel').textContent = panelMB.toFixed(1) + ' MB';
-  $('#memCore').textContent = coreMB.toFixed(0) + ' MB';
-  $('#memLeft').textContent = Math.max(0, 20 - panelMB).toFixed(1) + ' MB';
-  const arc = $('#memArc');
-  arc.style.transition = 'stroke-dashoffset 1.2s cubic-bezier(.16,1,.3,1)';
-  arc.style.strokeDashoffset = (301.6 * (1 - Math.min(1, panelMB / 20))).toFixed(1);
-
   $('#devMem').textContent = `面板 ${panelMB.toFixed(1)} / 20 MB`;
   $('#devMemBar').style.width = Math.min(100, (panelMB / 20) * 100) + '%';
 
@@ -435,6 +454,9 @@ function renderStatus() {
   $('#authWarn').style.display = authOff ? '' : 'none';
   $('#authListen').textContent = s.listen || '—';
   $('#setSbVer').textContent = s.version || '—';
+  const el = $('#setEngineLabel'); if (el) el.textContent = eng();
+  const ac = $('#asCoreLabel'); if (ac) ac.textContent = eng();
+  const sf = $('#setStoreFmt'); if (sf) sf.textContent = `${engLang()} + rename`;
   $('#setPanelVer').textContent = s.panel_version ? `v${s.panel_version}` : '—';
   $('#setPlatform').textContent = s.arch || '—';
   $('#paletteVer').textContent = s.panel_version ? `sing-box panel v${s.panel_version}` : 'sing-box panel';
@@ -448,9 +470,8 @@ function renderStatus() {
   $('#navSubs').textContent = s.subs;
   $('#navNodes').textContent = s.nodes;
 
-  // 网络页双平台复用：Linux=透明代理（nftables），Windows=TUN 模式
+  // 网络页双平台复用：Linux=透明代理（redirect）+TUN，Windows=TUN 模式
   const linux = isLinux();
-  $('#svcTunCard').style.display = linux ? 'none' : '';
   $$('.nav-item[data-page="tproxy"]').forEach((el) => (el.style.display = ''));
   $$('[data-goto="tproxy"]').forEach((el) => (el.style.display = ''));
   $('#navTpLabel').textContent = linux ? '透明代理' : 'TUN 模式';
@@ -459,10 +480,19 @@ function renderStatus() {
   $('#tpDesc').textContent = linux
     ? 'nftables redirect 接管局域网 TCP 流量；客户端网关指向本机即可生效。'
     : 'TUN 虚拟网卡接管整机流量（含不走系统代理的程序）；需要管理员身份运行。';
-  $('#tpLinuxState').style.display = linux ? '' : 'none';
-  $('#tpWinState').style.display = linux ? 'none' : '';
-  $('#tpLinuxPreview').style.display = linux ? '' : 'none';
+  // 流量接管卡：redirect 行仅 Linux 显示，TUN 行两平台都有
+  $('#redirectRow').style.display = linux ? '' : 'none';
+  $('#redirectDivider').style.display = linux ? '' : 'none';
+  $('#nftPreview').style.display = linux ? '' : 'none';
   $('#tpWinInfo').style.display = linux ? 'none' : '';
+  if ($('#tpTakeoverSub')) {
+    $('#tpTakeoverSub').textContent = linux ? 'redirect（局域网）与 TUN（本机）独立开关，可同时启用' : '虚拟网卡接管整机流量';
+  }
+  if ($('#tpTakeoverNote')) {
+    $('#tpTakeoverNote').textContent = linux
+      ? 'redirect 只接管 TCP，目标为内网的流量直接放行；两个通道可同时开启——本机流量走 TUN，局域网设备走 redirect。切换任意开关都会重新渲染配置并重启核心（约 1 秒），失败自动回滚。'
+      : 'TUN 接管所有程序的流量，与系统代理可共存。切换开关会重新渲染配置并重启核心（约 1 秒），失败自动回滚。';
+  }
 
   // traffic stat
   renderTrafficStats();
@@ -734,7 +764,7 @@ async function toggleNode(id, btn) {
 }
 
 async function testOne(tag) {
-  if (!state.status?.running) { toast('err', '核心未运行', '先到服务页启动 sing-box'); return; }
+  if (!state.status?.running) { toast('err', '核心未运行', `先到服务页启动 ${eng()}`); return; }
   try {
     const d = await api('/api/v1/nodes/delay', { method: 'POST', body: JSON.stringify({ tags: [tag] }) });
     state.delays = d.delays;
@@ -746,7 +776,7 @@ async function testOne(tag) {
 
 async function testAll() {
   if (state.testRunning) return;
-  if (!state.status?.running) { toast('err', '核心未运行', '先到服务页启动 sing-box'); return; }
+  if (!state.status?.running) { toast('err', '核心未运行', `先到服务页启动 ${eng()}`); return; }
   state.testRunning = true;
   $('#testAllBtn').disabled = true;
   $('#stProgress').textContent = '测速中… 并发 3';
@@ -799,7 +829,17 @@ function renderConfig() {
   const raw = state.configRaw || '';
   if (editor) editor.value = raw;
   $('#codeStat').textContent = raw ? `行 ${raw.split('\n').length}` : '空';
-  $('#codeSrc').textContent = raw ? '来自 config.json' : '尚未生成';
+  $('#codeSrc').textContent = raw ? `来自 ${engFile()}` : '尚未生成';
+  const fn = $('#cfgFileName'); if (fn) fn.textContent = engFile();
+  const lang = $('#cfgLang'); if (lang) lang.textContent = engLang();
+  const tab = $('#cfgTabName'); if (tab) tab.textContent = `原始 ${engLang()}`;
+  const chk = $('#checkCmd'); if (chk) chk.textContent = engCheckCmd();
+  const chk2 = $('#cfgCheckCmd'); if (chk2) chk2.textContent = engIsMihomo() ? 'mihomo -t' : 'sing-box check';
+  const tplFn = $('#tplFileName'); if (tplFn) tplFn.textContent = engIsMihomo() ? 'template.yaml' : 'template.json';
+  const tplSk = $('#tplSkeleton');
+  if (tplSk) tplSk.textContent = engIsMihomo() ? 'proxies / proxy-groups / rules 骨架' : 'inbounds / dns / route 骨架';
+  const tplMg = $('#tplMergeNote');
+  if (tplMg) tplMg.textContent = engIsMihomo() ? 'YAML 合并 + 占位符替换' : 'JSON 合并 + 占位符替换';
   $('#srcNodes').textContent = `${state.nodes.filter((n) => n.enabled).length} 个启用节点`;
 
   const list = $('#snapList');
@@ -834,10 +874,10 @@ async function renderFromTemplate() {
 async function validateConfig() {
   const raw = $('#cfgEditor')?.value || state.configRaw;
   const out = $('#checkOut');
-  out.innerHTML = `<div class="dim">$ sing-box check -c config.json</div><div class="dim">  parsing…</div>`;
+  out.innerHTML = `<div class="dim">${esc(engCheckCmd())}</div><div class="dim">  parsing…</div>`;
   try {
     const r = await api('/api/v1/config/validate', { method: 'POST', body: JSON.stringify({ raw }) });
-    out.innerHTML = `<div class="dim">$ sing-box check -c config.json</div>
+    out.innerHTML = `<div class="dim">${esc(engCheckCmd())}</div>
       <div class="${r.ok ? 'ok' : 'err'}">${r.ok ? '✓ 校验通过' : '✗ 校验失败'}（${r.elapsed_ms}ms）</div>
       ${r.output ? `<div class="${r.ok ? 'dim' : 'err'}">${esc(r.output).replace(/\n/g, '<br>')}</div>` : ''}`;
     toast(r.ok ? 'ok' : 'err', r.ok ? '校验通过' : '校验失败', r.ok ? '可以安全写入' : '配置未写入磁盘');
@@ -852,7 +892,7 @@ async function applyConfig() {
   if (!raw) { toast('err', '没有配置内容'); return; }
   const ok = await confirmDialog({
     title: '保存并应用配置？',
-    body: '会先执行 <b>sing-box check</b>，通过后生成快照、原子写入并重启核心。启动失败会自动回滚。',
+    body: `会先执行 <b>${engIsMihomo() ? 'mihomo -t' : 'sing-box check'}</b>，通过后生成快照、原子写入并重启核心。启动失败会自动回滚。`,
     confirm: '保存并应用'
   });
   if (!ok) return;
@@ -874,7 +914,7 @@ async function applyConfig() {
 async function rollbackTo(version) {
   const ok = await confirmDialog({
     title: `回滚到 v${version}？`,
-    body: '回滚前会先执行 sing-box check，通过后写入并重启核心。',
+    body: `回滚前会先执行 ${engIsMihomo() ? 'mihomo -t' : 'sing-box check'}，通过后写入并重启核心。`,
     confirm: '回滚并重启',
     danger: true
   });
@@ -1187,7 +1227,7 @@ function connectConnections() {
 async function serviceAction(action) {
   const labels = { start: '启动', stop: '停止', restart: '重启' };
   const ok = await confirmDialog({
-    title: `${labels[action]} sing-box 核心？`,
+    title: `${labels[action]} ${eng()} 核心？`,
     body: action === 'stop'
       ? '停止后所有通过面板的代理流量会立即中断。'
       : '现有连接会短暂中断，通常 1 秒内恢复。',
@@ -1241,13 +1281,13 @@ async function loadTproxy() {
     $('#tproxySwitch').classList.toggle('on', !!d.enabled);
     $('#tproxyBadge').textContent = d.enabled ? '已接管' : '未启用';
     $('#tproxyBadge').className = 'badge ' + (d.enabled ? 'lime' : 'amber');
-    $('#tpState').textContent = d.enabled ? '已接管' : '未接管';
-    $('#tpState').style.color = d.enabled ? 'var(--lime)' : 'var(--text-3)';
     $('#tpRules').textContent = `${d.rules} 条`;
     $('#tpMode').textContent = d.mode;
     $('#tpCidrs').textContent = (d.cidrs && d.cidrs.length) ? d.cidrs.join('  ') : '未检测到';
     $('#tpCore').textContent = state.status?.running ? '运行中' : '未运行';
-    $('#tpPreviewNote').textContent = d.enabled ? '当前生效' : '启用后才会下发';
+    $('#tpPreviewNote').textContent = d.enabled ? '当前生效' : '启用后下发';
+    // 明细（规则数/网段/本机/DNS）只在启用后展示，未启用时保持行面干净
+    if ($('#tpRedirectGrid')) $('#tpRedirectGrid').style.display = d.enabled ? '' : 'none';
     $('#localSwitch').classList.toggle('on', !!d.local);
     $('#dnsSwitch').classList.toggle('on', !!d.dns);
     $('#localSwitch').disabled = !d.local_supported;
@@ -1405,7 +1445,7 @@ $('#dnsSwitch').onclick = async () => {
   if (next) {
     const ok = await confirmDialog({
       title: '接管局域网 DNS？',
-      body: '会把来自这些网段的 53 端口查询劫持到 sing-box：<br><code>' + ((state.tproxy?.cidrs || []).join('  ')) + '</code><br>好处是客户端能拿到未被污染的解析；代价是路由器上 dnsmasq 提供的本地域名对这些客户端失效。',
+      body: '会把来自这些网段的 53 端口查询劫持到当前内核：<br><code>' + ((state.tproxy?.cidrs || []).join('  ')) + '</code><br>好处是客户端能拿到未被污染的解析；代价是路由器上 dnsmasq 提供的本地域名对这些客户端失效。',
       confirm: '开始接管'
     });
     if (!ok) return;
@@ -1413,7 +1453,7 @@ $('#dnsSwitch').onclick = async () => {
   try {
     const d = await api('/api/v1/tproxy', { method: 'PUT', body: JSON.stringify({ enabled: true, dns: next }) });
     toast(next ? 'ok' : 'info', next ? '已接管局域网 DNS' : '已恢复局域网 DNS',
-      next ? `${d.rules} 条规则，客户端解析将由 sing-box 处理` : '53 端口不再劫持');
+      next ? `${d.rules} 条规则，客户端解析将由 ${engLabel()} 处理` : '53 端口不再劫持');
     await loadTproxy();
   } catch (e) {
     toast('err', '操作失败', e.message);
@@ -1455,6 +1495,7 @@ $('#tproxySwitch').onclick = async () => {
     const d = await api('/api/v1/tproxy', { method: 'PUT', body: JSON.stringify({ enabled: next }) });
     toast(next ? 'ok' : 'info', next ? '透明代理已开启' : '透明代理已关闭',
       next ? `${d.rules} 条规则已下发，局域网设备现在会被接管` : 'nftables 表已删除，流量恢复直连');
+    if (d.warning) toast('info', '注意', d.warning);
     await loadTproxy();
   } catch (e) {
     toast('err', '操作失败', e.message);
@@ -1469,32 +1510,28 @@ async function loadTun() {
     const d = await api('/api/v1/tun');
     state.tun = d;
     const on = !!d.running;
-    $('#tunSwitch').classList.toggle('on', on);
-    $('#tunState').textContent = on ? '已接管' : '未启用';
-    $('#tunState').style.color = on ? 'var(--lime)' : 'var(--text-3)';
-    $('#tunNote').textContent = on
-      ? 'singbox-tun 虚拟网卡已接管整机流量'
-      : '虚拟网卡接管整机流量（含不走系统代理的程序）';
-    // 网络页的 TUN 状态卡（Windows）
-    if ($('#tunState2')) {
-      $('#tunSwitch2').classList.toggle('on', on);
-      $('#tunState2').textContent = on ? '已接管' : '未启用';
-      $('#tunState2').style.color = on ? 'var(--lime)' : 'var(--text-3)';
-      $('#tunBadge').textContent = on ? '已接管' : '未启用';
-      $('#tunBadge').className = 'badge ' + (on ? 'lime' : 'amber');
-      $('#tunAdmin').textContent = d.supported === false ? '面板未以管理员运行' : '管理员身份运行';
-      $('#tunAdmin').className = 'badge ' + (d.supported === false ? 'red' : 'lime');
-    }
+    if ($('#tunDevName')) $('#tunDevName').textContent = engTunDev();
+    const linux = isLinux();
+    $('#tunSwitch2').classList.toggle('on', on);
+    $('#tunBadge').textContent = on ? '已接管' : '未启用';
+    $('#tunBadge').className = 'badge ' + (on ? 'lime' : 'amber');
+    $('#tunAdmin').textContent = d.supported === false
+      ? (linux ? '面板未以 root 运行' : '面板未以管理员运行')
+      : (linux ? 'root 身份运行' : '管理员身份运行');
+    $('#tunAdmin').className = 'badge ' + (d.supported === false ? 'red' : 'lime');
+    // 明细（设备/范围/权限）只在启用后展示
+    if ($('#tpTunGrid')) $('#tpTunGrid').style.display = on ? '' : 'none';
   } catch (e) { /* ignore */ }
 }
 
 async function tunToggle() {
-  const on = $('#tunSwitch').classList.contains('on');
+  const on = !!state.tun?.running;
   const next = !on;
+  const who = isLinux() ? 'root' : '管理员';
   const ok = await confirmDialog({
     title: next ? '开启 TUN 模式？' : '关闭 TUN 模式？',
     body: next
-      ? '会创建 <code>singbox-tun</code> 虚拟网卡，接管<b>整机所有流量</b>（包括不走系统代理的程序），需要面板以管理员身份运行。<br>配置重新渲染并重启核心，现有连接会中断约 1 秒。'
+      ? `会创建 <code>${engTunDev()}</code> 虚拟网卡，接管<b>整机所有流量</b>（包括不走系统代理的程序），需要面板以${who}身份运行。<br>配置重新渲染并重启核心，现有连接会中断约 1 秒。`
       : '移除 TUN 入站并重启核心，整机流量恢复直连。',
     confirm: next ? '开启 TUN' : '关闭 TUN'
   });
@@ -1502,7 +1539,7 @@ async function tunToggle() {
   try {
     await api('/api/v1/tun', { method: 'PUT', body: JSON.stringify({ enabled: next }) });
     toast(next ? 'ok' : 'info', next ? 'TUN 已开启' : 'TUN 已关闭',
-      next ? '虚拟网卡已创建，整机流量现在经由 sing-box' : '虚拟网卡已移除，流量恢复直连');
+      next ? `虚拟网卡已创建，整机流量现在经由 ${engLabel()}` : '虚拟网卡已移除，流量恢复直连');
   } catch (e) {
     toast('err', '操作失败', e.message);
   }
@@ -1510,8 +1547,30 @@ async function tunToggle() {
   setTimeout(loadTun, 1500);
 }
 
-$('#tunSwitch').onclick = tunToggle;
 $('#tunSwitch2').onclick = tunToggle;
+
+/* ------------------------------------------------------------ exit ip */
+
+// 首页「运行中」旁边的出口 IP 徽标：后端经内核 mixed 入站实测，60s 缓存
+async function loadExitIp() {
+  const el = $('#heroExitIp');
+  if (!el) return;
+  try {
+    const running = !!(state.status && state.status.running);
+    if (!running) {
+      el.style.display = 'none';
+      return;
+    }
+    const d = await api('/api/v1/exitip');
+    if (d && d.ip) {
+      el.textContent = `出口 ${d.ip}`;
+      el.title = d.via === 'proxy' ? '当前出口 IP · 经内核入站实测' : '当前出口 IP · 直连测得';
+      el.style.display = '';
+    } else {
+      el.style.display = 'none';
+    }
+  } catch (e) { /* ignore */ }
+}
 
 /* ------------------------------------------------------------ access control */
 
@@ -1643,6 +1702,119 @@ $$('#routeSeg button').forEach((b) => (b.onclick = () => setRouting(b.dataset.mo
 
 /* ------------------------------------------------------------ autostart */
 
+/* ------------------------------------------------------------ engine */
+
+async function loadEngine() {
+  try {
+    state.engine = await api('/api/v1/engine');
+  } catch (e) {
+    state.engine = null;
+  }
+  try {
+    state.geo = (await api('/api/v1/geodata')).geo;
+  } catch (e) {
+    state.geo = null;
+  }
+  renderEngine();
+}
+
+// geo 数据是 mihomo 启动的前提（缺了它会自己下载，实测 31 秒）。
+// 这里给一行状态，让人知道切过去要不要等。
+function geoLabel(g) {
+  if (!g) return '';
+  switch (g.state) {
+    case 'ready': return `已就绪${g.embedded ? '（内置）' : ''}`;
+    case 'downloading': {
+      // jsDelivr 走 chunked 传输时拿不到 Content-Length，只能退化成显示已下载量
+      if (g.total_bytes > 0) {
+        return `下载中 ${Math.round((g.bytes / g.total_bytes) * 100)}%`;
+      }
+      if (g.bytes > 0) return `下载中 ${(g.bytes / 1048576).toFixed(1)} MB`;
+      return '下载中…';
+    }
+    case 'failed': return '下载失败';
+    default: return (g.missing || []).length ? '待预取' : '已就绪';
+  }
+}
+
+function renderEngine() {
+  const d = state.engine;
+  const note = $('#engineNote');
+  if (!note) return;
+  if (!d) { note.textContent = '读取内核信息失败'; return; }
+  const cur = d.engine;
+  $('#engineBadge').textContent = d.label || cur;
+  $$('#engineSeg button').forEach((b) => {
+    const on = b.dataset.engine === cur;
+    b.classList.toggle('on', on);
+    const item = (d.available || []).find((x) => x.name === b.dataset.engine);
+    // 当前内核保持可点（点了直接返回），只禁用真正不可用的那个
+    b.disabled = !item || !item.ok;
+    b.title = item && !item.ok ? (item.error || '不可用') : '';
+  });
+  note.innerHTML = cur === 'mihomo'
+    ? `当前使用 <b>mihomo</b>：Clash 系 YAML 配置（<code>${esc(d.config)}</code>），节点与订阅格式同 Clash，兼容 Clash API。`
+    : `当前使用 <b>sing-box</b>：JSON 配置（<code>${esc(d.config)}</code>）。`;
+  const g = state.geo;
+  const geoRow = g ? `
+    <div style="display:flex;justify-content:space-between;gap:10px;font-size:11.5px">
+      <span style="color:var(--text-3)">geo 数据（mihomo 用）</span>
+      <span class="badge mono" title="${esc(g.state === 'failed' ? (g.error || '') : (g.missing || []).join('、'))}">${esc(geoLabel(g))}</span>
+    </div>` : '';
+  $('#engineDetail').innerHTML = (d.available || []).map((it) => `
+    <div style="display:flex;justify-content:space-between;gap:10px;font-size:11.5px">
+      <span style="color:var(--text-3)">${esc(it.label)}</span>
+      <span class="badge mono" style="max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(it.version || it.bin || '')}">${it.ok ? esc(it.version_short || it.version || '可用') : '不可用'}</span>
+    </div>`).join('') + geoRow;
+}
+
+async function switchEngine(name) {
+  if (name === eng()) return;
+  // 切 mihomo 前先看 geo 数据在不在：缺文件时 mihomo 会自己下载，实测 31 秒。
+  // 面板通常已经在后台下好了，这里只把「要不要等」如实告诉用户。
+  let geo = null;
+  if (name === 'mihomo') {
+    try { geo = (await api('/api/v1/geodata')).geo; } catch (e) { /* 老版本没有这个接口 */ }
+  }
+  const needGeo = !!geo && geo.state !== 'ready';
+  const geoNote = !needGeo ? ''
+    : `还需要准备约 12 MB 的 geo 数据（${(geo.missing || []).join('、') || 'GeoSite.dat、geoip.metadb'}），面板会先下载再启动。`;
+  const ok = await confirmDialog({
+    title: `切换到 ${name}？`,
+    body: `会停止当前内核，按 <b>${name}</b> 重新渲染一份配置（${name === 'mihomo' ? 'config.yaml' : 'config.json'}）并重启核心。` +
+      geoNote +
+      '切换失败会自动切回原内核。',
+    confirm: '切换内核'
+  });
+  if (!ok) return;
+  const btn = $$('#engineSeg button').find((b) => b.dataset.engine === name);
+  if (btn) { btn.disabled = true; btn.textContent = '切换中…'; }
+  // 下载期间把进度打到按钮上，避免十几秒里界面像卡死
+  let timer = null;
+  if (needGeo) {
+    timer = setInterval(async () => {
+      try {
+        const g = (await api('/api/v1/geodata')).geo;
+        if (!g || g.state !== 'downloading') return;
+        if (btn) btn.textContent = geoLabel(g).replace('下载中', 'geo');
+      } catch (e) { /* 忽略轮询失败 */ }
+    }, 800);
+  }
+  try {
+    const r = await api('/api/v1/engine', { method: 'PUT', body: JSON.stringify({ engine: name }) });
+    toast('ok', '内核已切换', `${r.label || name} ${r.version || ''}`.trim());
+    if (r.warning) toast('info', '注意', r.warning);
+  } catch (e) {
+    toast('err', '切换失败', e.message);
+  } finally {
+    if (timer) clearInterval(timer);
+  }
+  await Promise.all([pollStatus(), loadEngine(), loadConfig()]);
+  renderConfig();
+  const b2 = $$('#engineSeg button').find((b) => b.dataset.engine === name);
+  if (b2) b2.textContent = name;
+}
+
 async function loadAutostart() {
   try {
     const d = await api('/api/v1/autostart');
@@ -1654,12 +1826,16 @@ async function loadAutostart() {
   } catch (e) { /* ignore */ }
 }
 
+$$('#engineSeg button').forEach((b) => {
+  b.onclick = () => switchEngine(b.dataset.engine);
+});
+
 $('#asCoreSwitch').onclick = async () => {
   const next = !$('#asCoreSwitch').classList.contains('on');
   const ok = await confirmDialog({
-    title: next ? '开启 sing-box 开机自启？' : '关闭 sing-box 开机自启？',
+    title: next ? `开启 ${eng()} 开机自启？` : `关闭 ${eng()} 开机自启？`,
     body: next
-      ? '面板启动时会自动拉起 sing-box 核心。'
+      ? `面板启动时会自动拉起 ${eng()} 核心。`
       : '面板启动后不再自动拉起核心，需要在「服务」页手动启动。',
     confirm: next ? '开启' : '关闭'
   });
@@ -1722,6 +1898,8 @@ function go(page) {
   if (location.hash !== `#${page}`) history.replaceState(null, '', `#${page}`);
   // 进入局域网代理页时重新拉一次，避免显示别的页面停留期间改过的旧值
   if (page === 'lanproxy') loadLanProxy();
+  // 日志在别的页面不轮询，切回来先补一次，不然会显示几分钟前的尾巴
+  if (page === 'dashboard' || page === 'service') loadLogs();
 }
 
 window.addEventListener('hashchange', () => {
@@ -1743,7 +1921,7 @@ const COMMANDS = [
   { g: '页面', t: '透明代理 / TUN', p: 'tproxy', i: 'i-shield' },
   { g: '页面', t: '局域网代理', p: 'lanproxy', i: 'i-lan' },
   { g: '页面', t: '实时连接', p: 'conns', i: 'i-list' },
-  { g: '操作', t: '重启 sing-box', a: () => serviceAction('restart'), i: 'i-refresh' },
+  { g: '操作', t: '重启内核', a: () => serviceAction('restart'), i: 'i-refresh' },
   { g: '操作', t: '全部节点测速', a: () => { go('nodes'); testAll(); }, i: 'i-zap' },
   { g: '操作', t: '校验当前配置', a: () => { go('config'); validateConfig(); }, i: 'i-check' },
   { g: '操作', t: '新增订阅', a: () => { go('subs'); openAddSub(); }, i: 'i-plus' }

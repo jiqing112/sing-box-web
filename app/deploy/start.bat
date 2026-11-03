@@ -8,8 +8,11 @@ if not exist "panel.exe" (
   exit /b 1
 )
 if not exist "sing-box.exe" (
-  echo [WARN] sing-box.exe not found next to panel.exe; the core cannot start.
+  echo [WARN] sing-box.exe not found next to panel.exe; the sing-box core cannot start.
   echo        Put the official sing-box.exe in this folder.
+)
+if not exist "mihomo.exe" (
+  echo [INFO] mihomo.exe not found - optional second core, sing-box still works.
 )
 
 echo Starting sing-box panel ...

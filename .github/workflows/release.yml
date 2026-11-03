@@ -1,6 +1,6 @@
 name: release
 
-# 打 tag 即发布：把面板二进制和对应平台的 sing-box 内核打成一个开箱即用的压缩包。
+# 打 tag 即发布：把面板二进制和两个内核（sing-box / mihomo）打成一个开箱即用的压缩包。
 # 也可以在 Actions 页面手动触发（需要填版本号）。
 on:
   push:
@@ -15,12 +15,17 @@ on:
         description: '随包分发的 sing-box 版本（不带 v）'
         required: false
         default: '1.14.3'
+      mihomo_version:
+        description: '随包分发的 mihomo 版本（不带 v）'
+        required: false
+        default: '1.19.33'
 
 permissions:
   contents: write
 
 env:
   SINGBOX_VERSION: ${{ inputs.singbox_version || '1.14.3' }}
+  MIHOMO_VERSION: ${{ inputs.mihomo_version || '1.19.33' }}
 
 jobs:
   build:
@@ -35,16 +40,35 @@ jobs:
             goarch: amd64
             sb_asset: 'sing-box-*-linux-amd64.tar.gz'
             sb_file: sing-box
+            mh_asset: 'mihomo-linux-amd64'
+            mh_ext: gz
+            mh_file: mihomo
           - name: linux-arm64
             goos: linux
             goarch: arm64
             sb_asset: 'sing-box-*-linux-arm64.tar.gz'
             sb_file: sing-box
+            mh_asset: 'mihomo-linux-arm64'
+            mh_ext: gz
+            mh_file: mihomo
+          # MIPS 小路由（MT7621 / Cudy AC1200 等）：软浮点，纯静态无任何依赖
+          - name: linux-mipsle
+            goos: linux
+            goarch: mipsle
+            gomips: softfloat
+            sb_asset: 'sing-box-*-linux-mipsle-softfloat.tar.gz'
+            sb_file: sing-box
+            mh_asset: 'mihomo-linux-mipsle-softfloat'
+            mh_ext: gz
+            mh_file: mihomo
           - name: windows-amd64
             goos: windows
             goarch: amd64
             sb_asset: 'sing-box-*-windows-amd64.zip'
             sb_file: sing-box.exe
+            mh_asset: 'mihomo-windows-amd64'
+            mh_ext: zip
+            mh_file: mihomo.exe
 
     steps:
       - uses: actions/checkout@v4
@@ -63,11 +87,27 @@ jobs:
           echo "tag=$v" >> "$GITHUB_OUTPUT"
           echo "plain=${v#v}" >> "$GITHUB_OUTPUT"
 
+      - name: 打包 geo 数据（mihomo 用）
+        # 把 GeoSite.dat / geoip.metadb 下载后 gzip，再编译，它们会被 embed 进二进制。
+        # 压过的原因是内存：embed 数据被读过就常驻工作集，12 MB 原始文件会让面板
+        # 常驻 RSS 多挂 12 MB，gzip 后只有约 4 MB。面板解压时走流式，不额外占堆。
+        # 用户切到 mihomo 时零下载、离线可用；不打包也能跑，只是首次切换要等 8~30 秒。
+        # 这里容忍失败：CDN 抽风不该阻塞整个发布。
+        run: |
+          cd app/internal/service/geodata/assets
+          base=https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@release
+          curl -fsSL --retry 3 --max-time 120 -o GeoSite.dat "$base/geosite.dat" \
+            && curl -fsSL --retry 3 --max-time 120 -o geoip.metadb "$base/country.mmdb" \
+            && gzip -9 GeoSite.dat geoip.metadb \
+            && echo "geo 数据已打包（gzip）" || echo "::warning::geo 数据下载失败，发布包将依赖运行期下载"
+          ls -lh
+
       - name: 编译面板
         working-directory: app
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips || '' }}
           CGO_ENABLED: '0'
         run: |
           out=panel
@@ -93,8 +133,24 @@ jobs:
             --dir sb
           ls -lh sb
 
+      - name: 下载 mihomo 内核 v${{ env.MIHOMO_VERSION }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 资产名必须精确拼出来：mihomo 的 release 里还有 v1/v2/v3、go1.20 等
+          # 微架构/工具链变体，用 glob 会一次拉下十几个包。
+          asset="${{ matrix.mh_asset }}-v${MIHOMO_VERSION}.${{ matrix.mh_ext }}"
+          echo "下载 $asset"
+          mkdir -p mh
+          gh release download "v${MIHOMO_VERSION}" \
+            --repo MetaCubeX/mihomo \
+            --pattern "$asset" \
+            --dir mh
+          ls -lh mh
+
       - name: 解出内核二进制
         run: |
+          set -e
           cd sb
           for f in *; do
             case "$f" in
@@ -103,10 +159,22 @@ jobs:
             esac
           done
           found=$(find . -type f -name '${{ matrix.sb_file }}' | head -1)
-          [ -n "$found" ] || { echo "内核二进制没找到"; exit 1; }
-          cp "$found" ../dist/${{ matrix.sb_file }}
+          [ -n "$found" ] || { echo "sing-box 内核二进制没找到"; exit 1; }
+          cp "$found" "../dist/${{ matrix.sb_file }}"
           chmod +x "../dist/${{ matrix.sb_file }}"
-          ls -lh "../dist"
+          cd ../mh
+          for f in *; do
+            case "$f" in
+              *.zip) unzip -oq "$f" ;;
+              *.gz)  gzip -dc "$f" > "${f%.gz}" ;;
+            esac
+          done
+          # mihomo 的 .gz 里只有一个裸二进制，解压后文件名带版本号，统一改成 mihomo
+          found=$(find . -type f ! -name '*.gz' ! -name '*.zip' -size +1M | head -1)
+          [ -n "$found" ] || { echo "mihomo 内核二进制没找到"; exit 1; }
+          cp "$found" "../dist/${{ matrix.mh_file }}"
+          chmod +x "../dist/${{ matrix.mh_file }}"
+          ls -lh ../dist
 
       - name: 打包（Linux）
         if: matrix.goos == 'linux'
@@ -116,11 +184,12 @@ jobs:
           mkdir -p "stage/$pkg" out
           cp dist/panel        "stage/$pkg/panel"
           cp dist/sing-box     "stage/$pkg/sing-box"
+          cp dist/mihomo       "stage/$pkg/mihomo"
           cp app/deploy/panel.conf              "stage/$pkg/panel.conf"
           cp app/deploy/sing-box-panel.service  "stage/$pkg/sing-box-panel.service"
           cp app/deploy/install.sh              "stage/$pkg/install.sh"
           cp app/deploy/README-linux.txt        "stage/$pkg/README.txt"
-          chmod 755 "stage/$pkg/panel" "stage/$pkg/sing-box" "stage/$pkg/install.sh"
+          chmod 755 "stage/$pkg/panel" "stage/$pkg/sing-box" "stage/$pkg/mihomo" "stage/$pkg/install.sh"
           chmod 600 "stage/$pkg/panel.conf"
           tar -czf "out/$pkg.tar.gz" -C stage "$pkg"
           ( cd out && sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256" )
@@ -134,6 +203,7 @@ jobs:
           mkdir -p "stage/$pkg" out
           cp dist/panel.exe    "stage/$pkg/panel.exe"
           cp dist/sing-box.exe "stage/$pkg/sing-box.exe"
+          cp dist/mihomo.exe   "stage/$pkg/mihomo.exe"
           cp app/deploy/panel.conf        "stage/$pkg/panel.conf"
           cp app/deploy/start.bat         "stage/$pkg/start.bat"
           cp app/deploy/README-windows.txt "stage/$pkg/README.txt"
@@ -167,7 +237,8 @@ jobs:
           draft: false
           generate_release_notes: true
           body: |
-            开箱即用包：面板二进制 + 对应平台的 **sing-box ${{ env.SINGBOX_VERSION }}** 内核，解压即跑。
+            开箱即用包：面板二进制 + 对应平台的 **sing-box ${{ env.SINGBOX_VERSION }}** 与 **mihomo ${{ env.MIHOMO_VERSION }}** 内核，解压即跑。
+            两个内核都在包里，默认用 sing-box，可在面板「设置 → 内核」里一键切到 mihomo。
 
             | 平台 | 文件 | 说明 |
             | --- | --- | --- |
@@ -182,6 +253,10 @@ jobs:
 
             首次启动会生成随机密码并写入 `data/initial-password`，登录后请改掉。
             TUN 模式需要管理员 / root 权限。
+
+            切换内核会重新渲染一份对应格式的配置（`config.json` ↔ `config.yaml`），
+            两个内核的配置与快照互不覆盖，切回去还在。发布包里已内置 mihomo 需要的
+            geo 数据（`GeoSite.dat` / `geoip.metadb`，约 12 MB），切换不需要联网下载。
 
             每个包都附带 `.sha256` 校验文件。
           files: |

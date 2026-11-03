@@ -14,14 +14,18 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"singbox-panel/internal/model"
 	"singbox-panel/internal/service/clash"
 	"singbox-panel/internal/service/config"
+	"singbox-panel/internal/service/engine"
+	"singbox-panel/internal/service/geodata"
 	"singbox-panel/internal/service/subscription"
 	"singbox-panel/internal/service/supervisor"
 	"singbox-panel/internal/service/tproxy"
@@ -33,8 +37,11 @@ import (
 var Version = "0.9.7"
 
 const (
-	tokenTTL  = 7 * 24 * time.Hour
-	maxTokens = 64
+	// applyTimeout 覆盖「校验 + 重启 + 探活」全过程。mihomo 首次校验会下载
+	// geo 数据（约 12 MB），15 秒的默认窗口不够，这里统一放宽到 2 分钟。
+	applyTimeout = 120 * time.Second
+	tokenTTL     = 7 * 24 * time.Hour
+	maxTokens    = 64
 	// maxDelayTags 限制单次测速的节点数，防止超大订阅把面板拖死。
 	maxDelayTags = 2000
 )
@@ -45,8 +52,10 @@ type Server struct {
 	clash *clash.Client
 	app   *config.Applier
 	subs  *subscription.Service
-	bin   string
+	// bins 是「内核名 → 可执行文件路径」，切换内核时按当前引擎取。
+	bins  map[string]string
 	tp    *tproxy.Manager
+	geo   *geodata.Manager
 	start time.Time
 
 	tokenMu sync.RWMutex
@@ -62,17 +71,45 @@ type Server struct {
 	listenChanger func(string) error
 	listenConf    func(string) error
 	listenPinned  bool
+
+	// lastReq 记录最近一次 API 请求的时间戳（UnixNano），空闲回收据此判断
+	// 面板是不是真的没人用了，而不是只看堆大小。
+	lastReq atomic.Int64
+
+	// 出口 IP 测量缓存（exitip.go）：60 秒 TTL，失败 15 秒。
+	exitMu sync.Mutex
+	exitRes exitIPResult
+
+	// dnsNote 记录最近一次「本机 DNS 端口被占用」的提示，避免每次渲染都刷同一条日志。
+	dnsMu   sync.Mutex
+	dnsNote string
 }
 
-func New(st *store.Store, sup *supervisor.Supervisor, cl *clash.Client, bin, staticToken string, tp *tproxy.Manager) *Server {
+// logDNSNote 只在提示内容变化时打一次日志：渲染会被订阅刷新等操作反复触发，
+// 每次都打会把面板日志刷满。
+func (s *Server) logDNSNote(note string) {
+	s.dnsMu.Lock()
+	changed := s.dnsNote != note
+	s.dnsNote = note
+	s.dnsMu.Unlock()
+	if changed {
+		log.Printf("%s", note)
+	}
+}
+
+func New(st *store.Store, sup *supervisor.Supervisor, cl *clash.Client, bins map[string]string, staticToken string, tp *tproxy.Manager) *Server {
+	if bins == nil {
+		bins = map[string]string{}
+	}
 	s := &Server{
 		tp:          tp,
 		store:       st,
 		sup:         sup,
 		clash:       cl,
-		app:         config.NewApplier(st, bin),
+		app:         config.NewApplier(st, bins[engine.Normalize(st.Engine())]),
 		subs:        subscription.New(),
-		bin:         bin,
+		bins:        bins,
+		geo:         geodata.New(engine.Home(st.Dir(), engine.Mihomo)),
 		start:       time.Now(),
 		tokens:      map[string]time.Time{},
 		throttle:    loginLimiter{byIP: map[string]*loginAttempt{}},
@@ -108,6 +145,39 @@ func New(st *store.Store, sup *supervisor.Supervisor, cl *clash.Client, bin, sta
 	return s
 }
 
+// engineName 返回当前内核（已归一化）。
+func (s *Server) engineName() string { return engine.Normalize(s.store.Engine()) }
+
+// bin 返回当前内核的可执行文件路径。
+func (s *Server) bin() string { return s.bins[s.engineName()] }
+
+// renderConfig 用「当前设置 + 当前引擎的模板」重新渲染配置。
+// 面板里所有会改变配置的开关都走这里，避免各处重复拼装 RenderOpts。
+func (s *Server) renderConfig(set model.Settings) ([]byte, error) {
+	tplRaw, err := s.store.TemplateRaw()
+	if err != nil {
+		return nil, fmt.Errorf("读取模板失败: %w", err)
+	}
+	raw, err := config.RenderBytes(tplRaw, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
+	if err != nil {
+		return nil, err
+	}
+	// 本机 DNS 入站写死 127.0.0.1:53，而麒麟等发行版自带 dnsmasq 占着这个端口，
+	// 核心会以 bind: address already in use 崩溃循环。端口不可用时自动降级。
+	// 核心在跑时要把「自己占着的端口」告诉它，否则会把自家端口当成冲突。
+	ownPort := 0
+	if s.sup.Running() {
+		if cur, err := s.store.Config(); err == nil {
+			ownPort = config.LocalDNSPortOf(cur)
+		}
+	}
+	if fixed, note := config.RepairLocalDNS(raw, ownPort); note != "" {
+		s.logDNSNote(note)
+		return fixed, nil
+	}
+	return raw, nil
+}
+
 /* ------------------------------------------------------------ router */
 
 func (s *Server) Router(static http.Handler) http.Handler {
@@ -120,8 +190,13 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	mux.HandleFunc("PUT /api/v1/settings/listen", s.auth(s.listenSet))
 
 	mux.HandleFunc("GET /api/v1/status", s.auth(s.status))
+	mux.HandleFunc("GET /api/v1/exitip", s.auth(s.exitIP))
 	mux.HandleFunc("GET /api/v1/logs", s.auth(s.logs))
 	mux.HandleFunc("POST /api/v1/service/{action}", s.auth(s.service))
+	mux.HandleFunc("GET /api/v1/engine", s.auth(s.engineGet))
+	mux.HandleFunc("PUT /api/v1/engine", s.auth(s.engineSet))
+	mux.HandleFunc("GET /api/v1/geodata", s.auth(s.geoStatus))
+	mux.HandleFunc("POST /api/v1/geodata/prefetch", s.auth(s.geoPrefetch))
 
 	mux.HandleFunc("GET /api/v1/subscriptions", s.auth(s.listSubs))
 	mux.HandleFunc("POST /api/v1/subscriptions", s.auth(s.createSub))
@@ -134,7 +209,7 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	mux.HandleFunc("PUT /api/v1/nodes/{id}", s.auth(s.toggleNode))
 
 	mux.HandleFunc("GET /api/v1/config", s.auth(s.getConfig))
-	mux.HandleFunc("POST /api/v1/config/render", s.auth(s.renderConfig))
+	mux.HandleFunc("POST /api/v1/config/render", s.auth(s.renderConfigHandler))
 	mux.HandleFunc("POST /api/v1/config/validate", s.auth(s.validateConfig))
 	mux.HandleFunc("POST /api/v1/config/apply", s.auth(s.applyConfig))
 	mux.HandleFunc("GET /api/v1/config/snapshots", s.auth(s.snapshots))
@@ -162,7 +237,42 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	})
 
 	mux.Handle("/", static)
-	return mux
+	// 每次请求都记一下活跃时间，空闲回收用得到。包一层比在每个 handler
+	// 里写一行可靠，也不会漏掉新加的接口。
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.lastReq.Store(time.Now().UnixNano())
+		mux.ServeHTTP(w, r)
+	})
+}
+
+/* ------------------------------------------------------------ 内存 */
+
+// 空闲回收的参数。面板常驻时堆只有 2 MB 上下，但浏览器开着两个 WebSocket、
+// 每 3 秒拉一次日志，Go 的堆会冲高到 6~8 MB；GC 之后这些页留在工作集里不还，
+// 任务管理器看到的就是 20 MB+。没人用了就把页还回去。
+const (
+	idleTrimTick = 30 * time.Second
+	idleTrimWait = 90 * time.Second
+)
+
+// StartIdleTrim 在长时间没有请求时把空闲页还给操作系统（debug.FreeOSMemory）。
+// 只在真正空闲时触发：FreeOSMemory 会做一次完整的 stop-the-world GC，
+// 正在被使用时做这件事只会让接口变慢。
+func (s *Server) StartIdleTrim() {
+	go func() {
+		t := time.NewTicker(idleTrimTick)
+		defer t.Stop()
+		for range t.C {
+			last := s.lastReq.Load()
+			if last == 0 {
+				continue
+			}
+			if time.Since(time.Unix(0, last)) < idleTrimWait {
+				continue
+			}
+			debug.FreeOSMemory()
+		}
+	}()
 }
 
 /* ------------------------------------------------------------ auth */
@@ -532,19 +642,10 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rules := 0
 	cfgVer := s.store.Settings().ConfigVersion
 	raw, _ := s.store.Config()
-	if len(raw) > 0 {
-		var doc struct {
-			Route struct {
-				Rules []any `json:"rules"`
-			} `json:"route"`
-		}
-		if json.Unmarshal(raw, &doc) == nil {
-			rules = len(doc.Route.Rules)
-		}
-	}
+	eng := s.engineName()
+	rules := config.RuleCount(raw, eng)
 
 	version := ""
 	active := ""
@@ -583,7 +684,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"active":         active,
 		"panel_version":  Version,
 		"arch":           runtime.GOOS + "/" + runtime.GOARCH,
-		"mixed_port":     detectMixedPort(raw),
+		"mixed_port":     config.MixedPort(raw, eng),
 		"mixed_listen":   set.MixedListen,
 		"config_version": cfgVer,
 		"nodes":          len(nodes),
@@ -608,6 +709,9 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"last_error":     lastErr,
 		"panel_uptime":   int64(time.Since(s.start).Seconds()),
 		"platform":       runtime.GOOS,
+		"engine":         eng,
+		"engine_label":   engine.Label(eng),
+		"engine_bin":     s.bin(),
 		"now":            time.Now(),
 	})
 }
@@ -628,6 +732,16 @@ func (s *Server) service(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "start":
 		s.sup.ResetCrashes()
+		// 核心没在跑时，配置里的本机 DNS 端口可能已经被系统服务（如 dnsmasq）占了，
+		// 先降级再启动，避免「点了启动就崩溃」。
+		if !s.sup.Running() {
+			if raw, err := s.store.Config(); err == nil && len(raw) > 0 {
+				if fixed, note := config.RepairLocalDNS(raw, 0); note != "" {
+					s.logDNSNote(note)
+					_ = s.store.WriteConfig(fixed)
+				}
+			}
+		}
 		err = s.sup.Start()
 		if errors.Is(err, supervisor.ErrRunning) {
 			// 已经在跑：当成成功，避免「启动」按钮弹出无意义的错误
@@ -739,9 +853,14 @@ func (s *Server) createSub(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	nodes, info, err := s.subs.Refresh(ctx, sub, nil, s.reservedTags(""))
+	nodes, info, notModified, err := s.subs.Refresh(ctx, sub, nil, s.reservedTags(""))
 	if err != nil {
 		writeErr(w, 502, "fetch_failed", err.Error())
+		return
+	}
+	if notModified && len(nodes) == 0 {
+		// 首次添加就撞上 204：机场限流/无内容，本地没有可保留的节点。
+		writeErr(w, 502, "fetch_failed", "订阅端返回 204（内容未变化或请求过于频繁），未获取到节点，请稍后重试")
 		return
 	}
 	if err := s.store.SaveNodes(sub.ID, nodes); err != nil {
@@ -840,11 +959,24 @@ func (s *Server) refreshSub(w http.ResponseWriter, r *http.Request) {
 // refreshOne 拉取并保存单个订阅，失败时只记录错误，不影响其它订阅。
 func (s *Server) refreshOne(ctx context.Context, sub model.Subscription) (int, error) {
 	prev, _ := s.store.Nodes(sub.ID)
-	nodes, info, err := s.subs.Refresh(ctx, sub, prev, s.reservedTags(sub.ID))
+	nodes, info, notModified, err := s.subs.Refresh(ctx, sub, prev, s.reservedTags(sub.ID))
 	if err != nil {
 		sub.LastError = err.Error()
 		_ = s.store.UpsertSubscription(sub)
 		return 0, err
+	}
+	if notModified {
+		// 机场用 204 表示「内容未变化/请求太频繁」：保留既有节点，
+		// 只刷新时间戳并清掉旧错误，不算失败。
+		sub.UpdatedAt = time.Now()
+		sub.LastError = ""
+		if info.Total > 0 {
+			sub.UsageUsed = info.Upload + info.Download
+			sub.UsageTotal = info.Total
+			sub.Expire = info.Expire
+		}
+		_ = s.store.UpsertSubscription(sub)
+		return len(prev), nil
 	}
 	if err := s.store.SaveNodes(sub.ID, nodes); err != nil {
 		return 0, err
@@ -922,7 +1054,7 @@ func (s *Server) delayNodes(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in)
 	if !s.sup.Running() {
-		writeErr(w, 409, "core_stopped", "sing-box 未运行，无法测速")
+		writeErr(w, 409, "core_stopped", engine.Label(s.engineName())+" 未运行，无法测速")
 		return
 	}
 
@@ -1000,25 +1132,6 @@ func normalizeDelayTags(tags []string, all []model.Node) ([]string, error) {
 	return out, nil
 }
 
-// detectMixedPort 从已下发配置里读 mixed 入站端口，供前端展示真实入站。
-func detectMixedPort(raw []byte) int {
-	var doc struct {
-		Inbounds []struct {
-			Type       string `json:"type"`
-			ListenPort int    `json:"listen_port"`
-		} `json:"inbounds"`
-	}
-	if len(raw) == 0 || json.Unmarshal(raw, &doc) != nil {
-		return 0
-	}
-	for _, in := range doc.Inbounds {
-		if in.Type == "mixed" && in.ListenPort > 0 {
-			return in.ListenPort
-		}
-	}
-	return 0
-}
-
 func (s *Server) toggleNode(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Enabled bool `json:"enabled"`
@@ -1045,19 +1158,14 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"raw": string(raw), "snapshots": s.store.Snapshots()})
 }
 
-func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request) {
-	tpl, err := s.store.Template()
-	if err != nil {
-		writeErr(w, 500, "template_failed", err.Error())
-		return
-	}
+func (s *Server) renderConfigHandler(w http.ResponseWriter, r *http.Request) {
 	set := s.store.Settings()
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
+	raw, err := s.renderConfig(set)
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"raw": string(raw)})
+	writeJSON(w, 200, map[string]any{"raw": string(raw), "engine": s.engineName()})
 }
 
 func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
@@ -1068,7 +1176,7 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad_request", "缺少配置内容")
 		return
 	}
-	res := config.Check(r.Context(), s.bin, []byte(in.Raw))
+	res := config.Check(r.Context(), s.bin(), s.engineName(), s.store.Dir(), []byte(in.Raw))
 	s.checkMu.Lock()
 	s.lastCheck = res
 	s.checkMu.Unlock()
@@ -1088,7 +1196,7 @@ func (s *Server) applyConfig(w http.ResponseWriter, r *http.Request) {
 	if in.Note == "" {
 		in.Note = "手动保存"
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), applyTimeout)
 	defer cancel()
 	if err := s.app.Apply(ctx, []byte(in.Raw), in.Note); err != nil {
 		s.failSafeNetwork()
@@ -1122,7 +1230,7 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad_request", "缺少版本号")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), applyTimeout)
 	defer cancel()
 	if err := s.app.Rollback(ctx, in.Version); err != nil {
 		s.failSafeNetwork()
@@ -1152,6 +1260,29 @@ func (s *Server) tproxyStatus(w http.ResponseWriter, r *http.Request) {
 		"detected":        tproxy.DetectLAN(),
 		"note":            "redirect 仅接管 TCP；目标为内网的流量直接放行",
 	})
+}
+
+// checkTProxyMark 确认当前配置带上了 fwmark 标记。
+// nftables < 1.0（麒麟 V10 自带 0.9.3）没有 socket cgroupv2 匹配，
+// 「接管本机流量」只能靠 route.default_mark 把代理自己的出站放行掉。
+// 配置里没有这个标记就开本机接管，流量会被重定向回自己形成回环 → 整机断网。
+func (s *Server) checkTProxyMark() error {
+	raw, err := s.store.Config()
+	if err != nil || len(raw) == 0 {
+		return fmt.Errorf("读取配置失败，请先在「配置」页渲染并应用一次配置")
+	}
+	var cfg struct {
+		Route struct {
+			DefaultMark *uint32 `json:"default_mark"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("配置解析失败: %v", err)
+	}
+	if cfg.Route.DefaultMark == nil || *cfg.Route.DefaultMark != tproxy.Mark {
+		return fmt.Errorf("当前配置缺少 fwmark 标记（route.default_mark=%d），请先在「配置」页重新渲染并应用，再开启本机接管", tproxy.Mark)
+	}
+	return nil
 }
 
 // tproxySet 打开/关闭透明代理。打开时下发 nftables，关闭时删表。
@@ -1203,6 +1334,14 @@ func (s *Server) tproxySet(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "inbound_missing", err.Error())
 			return
 		}
+		// 老版本 nftables 没有 cgroup 匹配，只能靠 fwmark 排除代理自身的出站。
+		// 配置里没这个标记的话，开了本机接管会把自己的流量重定向回自己 → 回环断网。
+		if local && !s.tp.CgroupSupported() {
+			if err := s.checkTProxyMark(); err != nil {
+				writeErr(w, 400, "mark_missing", err.Error())
+				return
+			}
+		}
 		if err := s.tp.Apply(cidrs, local, hijackDNS); err != nil {
 			writeErr(w, 500, "nft_failed", err.Error())
 			return
@@ -1235,7 +1374,27 @@ func (s *Server) tproxySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st := s.tp.Status(cidrs)
-	writeJSON(w, 200, map[string]any{"ok": true, "enabled": st.Enabled, "local": st.Local, "dns": st.DNS, "rules": st.Rules, "cidrs": cidrs})
+	// 规则下发成功不代表 LAN 真的能用：入站只绑回环时规则照样命中，
+	// 但客户端连的是网关的局域网地址，结果是 Connection refused。
+	// 这种情况必须明说，否则用户只会看到「透明代理已开启」然后局域网不通。
+	warning := ""
+	if st.Enabled && len(cidrs) > 0 && !s.redirReachable(set.TproxyPort) {
+		warning = "透明代理入站只监听了回环地址，局域网设备会被拒绝连接；请把入站监听到 0.0.0.0 后重新应用配置"
+		log.Printf("透明代理告警：%s", warning)
+	}
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "enabled": st.Enabled, "local": st.Local, "dns": st.DNS,
+		"rules": st.Rules, "cidrs": cidrs, "warning": warning,
+	})
+}
+
+// redirReachable 判断当前配置里的透明代理入站是否绑在局域网可达的地址上。
+func (s *Server) redirReachable(port int) bool {
+	raw, err := s.store.Config()
+	if err != nil || len(raw) == 0 {
+		return true
+	}
+	return config.RedirReachableFromLAN(raw, s.engineName(), port)
 }
 
 // verifyTproxyInbounds 确认已下发的配置里确实监听了规则要重定向到的端口。
@@ -1245,36 +1404,12 @@ func (s *Server) verifyTproxyInbounds(port int, hijackDNS bool) error {
 	if err != nil || len(raw) == 0 {
 		return fmt.Errorf("当前没有已下发的配置")
 	}
-	return VerifyTproxyInbounds(raw, port, hijackDNS)
+	return config.VerifyTproxy(raw, s.engineName(), port, hijackDNS)
 }
 
 // VerifyTproxyInbounds 是 verifyTproxyInbounds 的纯函数版本，供启动时自检复用。
-func VerifyTproxyInbounds(raw []byte, port int, hijackDNS bool) error {
-	var doc struct {
-		Inbounds []struct {
-			Type       string `json:"type"`
-			ListenPort int    `json:"listen_port"`
-		} `json:"inbounds"`
-	}
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("配置解析失败: %w", err)
-	}
-	hasRedirect, hasDNS := false, false
-	for _, in := range doc.Inbounds {
-		if in.Type == "redirect" && in.ListenPort == port {
-			hasRedirect = true
-		}
-		if in.ListenPort == 5354 {
-			hasDNS = true
-		}
-	}
-	if !hasRedirect {
-		return fmt.Errorf("当前配置没有监听 :%d 的 redirect 入站，请先应用包含该入站的配置", port)
-	}
-	if hijackDNS && !hasDNS {
-		return fmt.Errorf("当前配置没有监听 :5354 的 DNS 入站，无法接管局域网 DNS")
-	}
-	return nil
+func VerifyTproxyInbounds(raw []byte, eng string, port int, hijackDNS bool) error {
+	return config.VerifyTproxy(raw, eng, port, hijackDNS)
 }
 
 /* ------------------------------------------------------------ lan proxy */
@@ -1406,12 +1541,7 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 
 	// 先渲染校验，成功后再落盘：否则会出现「接口返回 400 但设置已生效」，
 	// 下次任意配置渲染都会带上这份未真正下发的局域网代理参数。
-	tpl, err := s.store.Template()
-	if err != nil {
-		writeErr(w, 500, "template_failed", err.Error())
-		return
-	}
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
+	raw, err := s.renderConfig(set)
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return
@@ -1420,7 +1550,7 @@ func (s *Server) lanProxySet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "save_failed", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), applyTimeout)
 	defer cancel()
 	if err := s.app.Apply(ctx, raw, "局域网代理设置变更"); err != nil {
 		// 下发失败时恢复设置，保持 settings.json 与实际生效配置一致
@@ -1471,21 +1601,7 @@ func (s *Server) tunRunning() bool {
 	if err != nil {
 		return false
 	}
-	var doc struct {
-		Inbounds []struct {
-			Type string `json:"type"`
-			Tag  string `json:"tag"`
-		} `json:"inbounds"`
-	}
-	if json.Unmarshal(raw, &doc) != nil {
-		return false
-	}
-	for _, in := range doc.Inbounds {
-		if in.Type == "tun" && in.Tag == "tun-in" {
-			return true
-		}
-	}
-	return false
+	return config.TunRunning(raw, s.engineName())
 }
 
 func (s *Server) tunGet(w http.ResponseWriter, r *http.Request) {
@@ -1519,12 +1635,7 @@ func (s *Server) tunSet(w http.ResponseWriter, r *http.Request) {
 	prev := set
 	set.TunEnabled = in.Enabled
 
-	tpl, err := s.store.Template()
-	if err != nil {
-		writeErr(w, 500, "template_failed", err.Error())
-		return
-	}
-	raw, err := config.Render(tpl, s.store.AllNodes(), config.FromSettings(set, s.store.Dir()))
+	raw, err := s.renderConfig(set)
 	if err != nil {
 		writeErr(w, 400, "render_failed", err.Error())
 		return
@@ -1533,7 +1644,7 @@ func (s *Server) tunSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, "save_failed", err.Error())
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), applyTimeout)
 	defer cancel()
 	if err := s.app.Apply(ctx, raw, "TUN 模式 "+map[bool]string{true: "开启", false: "关闭"}[in.Enabled]); err != nil {
 		_ = s.store.SaveSettings(prev)
@@ -1574,7 +1685,7 @@ func (s *Server) clashProxy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 403, "forbidden", "该路径不在白名单内")
 		return
 	}
-	target := "http://127.0.0.1:9091" + path
+	target := "http://" + s.clash.Addr() + path
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

@@ -26,4 +26,15 @@ func defaultSingBoxBin() string {
 	return "sing-box.exe"
 }
 
+// defaultMihomoBin 与 sing-box 一致：先找 exe 同目录，再回退到 PATH。
+func defaultMihomoBin() string {
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "mihomo.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "mihomo.exe"
+}
+
 func defaultNftPath() string { return "nft" }

@@ -21,6 +21,13 @@ fi
 install -m 755 "$HERE/panel" "$PREFIX/bin/panel"
 install -m 755 "$HERE/sing-box" /usr/local/bin/sing-box
 
+# mihomo 是可选的第二个内核：包里有就装，没有（老包）就跳过，
+# 面板照常用 sing-box，只是「设置 → 内核」里 mihomo 显示不可用。
+if [ -f "$HERE/mihomo" ]; then
+  install -m 755 "$HERE/mihomo" /usr/local/bin/mihomo
+  echo "==> 已安装 mihomo，可在面板「设置 → 内核」里切换"
+fi
+
 # panel.conf 只在缺失时安装，避免覆盖用户改过的监听地址 / 口令
 if [ ! -f "$PREFIX/bin/panel.conf" ]; then
   install -m 600 "$HERE/panel.conf" "$PREFIX/bin/panel.conf"
@@ -45,5 +52,6 @@ if [ -f "$PREFIX/data/initial-password" ]; then
 fi
 echo
 echo "常用命令："
-echo "  systemctl restart sing-box-panel     # 重启面板（会连带重启 sing-box 核心）"
+echo "  systemctl restart sing-box-panel     # 重启面板（会连带重启当前内核）"
 echo "  journalctl -u sing-box-panel -f      # 看日志"
+echo "  mihomo -v / sing-box version         # 看两个内核的版本"

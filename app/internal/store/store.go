@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"singbox-panel/internal/model"
+	"singbox-panel/internal/service/engine"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -23,6 +25,9 @@ type Store struct {
 	mu       sync.RWMutex
 	subs     []model.Subscription
 	settings model.Settings
+	// engine 决定 config/template 的文件名（JSON 还是 YAML）。
+	// 单独存一份是为了让 ConfigPath() 不必再去拿 Settings() 的读锁。
+	engine string
 }
 
 func Open(dir string) (*Store, error) {
@@ -31,12 +36,14 @@ func Open(dir string) (*Store, error) {
 			return nil, err
 		}
 	}
-	s := &Store{dir: dir, settings: model.DefaultSettings()}
+	s := &Store{dir: dir, settings: model.DefaultSettings(), engine: engine.SingBox}
 
 	if err := s.read(filepath.Join(dir, "settings.json"), &s.settings); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	// 兼容旧版 settings.json：缺字段时补默认值
+	s.settings.Engine = engine.Normalize(s.settings.Engine)
+	s.engine = s.settings.Engine
 	if s.settings.KeepSnapshots <= 0 {
 		s.settings.KeepSnapshots = 3
 	}
@@ -48,6 +55,9 @@ func Open(dir string) (*Store, error) {
 	}
 	if s.settings.TproxyPort <= 0 {
 		s.settings.TproxyPort = 12345
+	}
+	if s.settings.ClashAddr == "" {
+		s.settings.ClashAddr = "127.0.0.1:9091"
 	}
 	if s.settings.TproxyMode == "" {
 		s.settings.TproxyMode = "redirect"
@@ -70,17 +80,133 @@ func Open(dir string) (*Store, error) {
 	if err := s.read(filepath.Join(dir, "subs.json"), &s.subs); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	if _, err := os.Stat(s.TemplatePath()); os.IsNotExist(err) {
-		if err := s.write(s.TemplatePath(), defaultTemplate()); err != nil {
-			return nil, err
-		}
+	if err := s.ensureTemplate(); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
 
-func (s *Store) Dir() string                { return s.dir }
-func (s *Store) ConfigPath() string         { return filepath.Join(s.dir, "config.json") }
-func (s *Store) TemplatePath() string       { return filepath.Join(s.dir, "template.json") }
+// Engine 返回当前内核名（已归一化）。
+func (s *Store) Engine() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.engine
+}
+
+// SetEngine 切换内核。切换后 ConfigPath/TemplatePath 指向该引擎自己的文件，
+// 两个引擎的配置互不覆盖，切回去还能用原来那份。
+func (s *Store) SetEngine(name string) error {
+	e := engine.Normalize(name)
+	s.mu.Lock()
+	s.engine = e
+	s.mu.Unlock()
+	return s.ensureTemplate()
+}
+
+// ensureTemplate 在模板缺失时写入该引擎的内置模板。
+// sing-box 写 JSON，mihomo 写 YAML；两者文件名不同，互不影响。
+func (s *Store) ensureTemplate() error {
+	path := s.TemplatePath()
+	if _, err := os.Stat(path); err == nil {
+		s.migrateTemplateURLs(path)
+		return nil
+	}
+	var b []byte
+	if engine.IsMihomo(s.Engine()) {
+		b = []byte(defaultClashTemplate())
+	} else {
+		j, err := json.MarshalIndent(defaultTemplate(), "", "  ")
+		if err != nil {
+			return err
+		}
+		b = j
+	}
+	return WriteFileAtomic(path, b, 0o600)
+}
+
+// 老版本的内置模板把规则集指向 raw.githubusercontent.com，境内基本不可达，
+// 核心启动时会 FATAL（"initial rule-set: ... dial tcp: i/o timeout"），
+// 用户只看到一句 probe 失败，很难自己定位。
+//
+// 迁移只碰三处，且都要求与内置默认值一致：
+//  1. URL 精确等于那两个 raw 地址 → 换成 jsDelivr 镜像
+//  2. 这些规则集的 http_client.detour 为 proxy → 改成 direct
+//  3. 更老的 download_detour 一级字段（proxy / direct）→ 同上
+//
+// 用户自己改过的 URL / 别的 http_client 一律不动。替换是幂等的。
+func (s *Store) migrateTemplateURLs(path string) {
+	if engine.IsMihomo(s.Engine()) {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return // 模板被改坏了，交给 check 报错，不在这里猜
+	}
+	route, _ := doc["route"].(map[string]any)
+	sets, _ := route["rule_set"].([]any)
+	changed := false
+	for _, it := range sets {
+		rs, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		if url, _ := rs["url"].(string); url != "" {
+			switch url {
+			case "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs":
+				rs["url"] = "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs"
+				changed = true
+			case "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs":
+				rs["url"] = "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs"
+				changed = true
+			}
+		}
+		if hc, ok := rs["http_client"].(map[string]any); ok {
+			if d, _ := hc["detour"].(string); d == "proxy" || d == "direct" {
+				// proxy：节点全挂时下不到规则集，核心 FATAL
+				// direct：sing-box 拒绝 detour 到空 direct，同样起不来
+				hc["detour"] = model.RuleSetDetourTag
+				changed = true
+			}
+		}
+		// 更老的模板用的是 sing-box 1.14 之前的一级字段 download_detour。
+		// 渲染层会把它改写成 http_client.detour，于是 "proxy" 又回来了 —— 启动时
+		// 节点还没选好，规则集下不到，核心直接 FATAL。这里就地换成独立直连出站。
+		if d, ok := rs["download_detour"].(string); ok && (d == "proxy" || d == "direct") {
+			delete(rs, "download_detour")
+			if _, has := rs["http_client"]; !has {
+				rs["http_client"] = map[string]any{"detour": model.RuleSetDetourTag}
+			}
+			changed = true
+		}
+	}
+	if !changed {
+		return
+	}
+	out, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := WriteFileAtomic(path, out, 0o600); err != nil {
+		return
+	}
+	log.Printf("已把模板里的规则集下载切到 jsDelivr 镜像并改为直连（%s）", filepath.Base(path))
+}
+
+func (s *Store) Dir() string { return s.dir }
+
+// ConfigPath 是当前引擎的生效配置：sing-box 用 config.json，mihomo 用 config.yaml。
+func (s *Store) ConfigPath() string {
+	return filepath.Join(s.dir, engine.ConfigFile(s.Engine()))
+}
+
+func (s *Store) TemplatePath() string {
+	return filepath.Join(s.dir, engine.TemplateFile(s.Engine()))
+}
+
 func (s *Store) snapshotDir() string        { return filepath.Join(s.dir, "snapshots") }
 func (s *Store) nodesPath(id string) string { return filepath.Join(s.dir, "nodes-"+id+".json") }
 
@@ -138,9 +264,11 @@ func (s *Store) Settings() model.Settings {
 }
 
 func (s *Store) SaveSettings(v model.Settings) error {
+	v.Engine = engine.Normalize(v.Engine)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings = v
+	s.engine = v.Engine
 	return s.write(filepath.Join(s.dir, "settings.json"), v)
 }
 
@@ -259,16 +387,21 @@ func (s *Store) WriteConfig(b []byte) error {
 	return WriteFileAtomic(s.ConfigPath(), b, 0o600)
 }
 
-func (s *Store) Template() (map[string]any, error) {
-	var tpl map[string]any
-	if err := s.read(s.TemplatePath(), &tpl); err != nil {
-		return nil, err
+// TemplateRaw 读取当前引擎的模板原文：sing-box 是 JSON，mihomo 是 YAML。
+// 面板不解析模板结构，交给 config 包按引擎解码。
+func (s *Store) TemplateRaw() ([]byte, error) {
+	b, err := os.ReadFile(s.TemplatePath())
+	if os.IsNotExist(err) {
+		if err := s.ensureTemplate(); err != nil {
+			return nil, err
+		}
+		return os.ReadFile(s.TemplatePath())
 	}
-	return tpl, nil
+	return b, err
 }
 
-func (s *Store) SaveTemplate(tpl map[string]any) error {
-	return s.write(s.TemplatePath(), tpl)
+func (s *Store) SaveTemplateRaw(b []byte) error {
+	return WriteFileAtomic(s.TemplatePath(), b, 0o600)
 }
 
 // BumpConfigVersion 每次成功写入配置后自增，用来表示「当前生效的是第几版」。
@@ -315,7 +448,7 @@ func (s *Store) TakeSnapshot(note string) (model.Snapshot, error) {
 			version = it.Version + 1
 		}
 	}
-	file := fmt.Sprintf("v%d-%d.json", version, time.Now().Unix())
+	file := fmt.Sprintf("v%d-%d%s", version, time.Now().Unix(), engine.Ext(s.Engine()))
 	if err := WriteFileAtomic(filepath.Join(s.snapshotDir(), file), cur, 0o600); err != nil {
 		return model.Snapshot{}, err
 	}
@@ -364,7 +497,7 @@ func (s *Store) gcSnapshots(list []model.Snapshot) {
 		if e.IsDir() || keep[e.Name()] {
 			continue
 		}
-		if strings.HasSuffix(e.Name(), ".json") {
+		if strings.HasSuffix(e.Name(), ".json") || strings.HasSuffix(e.Name(), ".yaml") {
 			_ = os.Remove(filepath.Join(s.snapshotDir(), e.Name()))
 		}
 	}
@@ -375,9 +508,13 @@ func (s *Store) SnapshotConfig(version int) ([]byte, error) {
 		if it.Version != version {
 			continue
 		}
-		// 兼容旧索引（file 字段缺失）：按 v<version>-*.json 兜底查找
+		// 兼容旧索引（file 字段缺失）：按 v<version>-*.json / *.yaml 兜底查找
 		if it.File == "" {
-			matches, _ := filepath.Glob(filepath.Join(s.snapshotDir(), fmt.Sprintf("v%d-*.json", version)))
+			var matches []string
+			for _, ext := range []string{".json", ".yaml"} {
+				m, _ := filepath.Glob(filepath.Join(s.snapshotDir(), fmt.Sprintf("v%d-*%s", version, ext)))
+				matches = append(matches, m...)
+			}
 			if len(matches) == 0 {
 				return nil, ErrNotFound
 			}
@@ -451,16 +588,20 @@ func defaultTemplate() map[string]any {
 			"rule_set": []any{
 				map[string]any{
 					"tag": "geosite-cn", "type": "remote", "format": "binary",
-					"url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
-					// sing-box 1.14 起 download_detour 已弃用、1.16 移除，
-					// 改用 http_client 指定下载走的出站（proxy 由 Render 生成）。
-					"http_client":     map[string]any{"detour": "proxy"},
+					// raw.githubusercontent.com 在境内基本不可达（实测 10s 零字节），
+					// 走 jsDelivr 镜像 1.4s 就能下完。
+					"url": "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+					// 规则集下载必须独立于节点：走 proxy 的话节点全挂时核心会因为
+					// 下不到规则集而 FATAL，用户连面板都进不去排查。
+					// 但 sing-box 不允许 detour 指向"空 direct"，所以 Render 会额外
+					// 生成一个带 tcp_fast_open 的 rule-set 出站专门给这里用。
+					"http_client":     map[string]any{"detour": model.RuleSetDetourTag},
 					"update_interval": "7d",
 				},
 				map[string]any{
 					"tag": "geoip-cn", "type": "remote", "format": "binary",
-					"url":             "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
-					"http_client":     map[string]any{"detour": "proxy"},
+					"url":             "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
+					"http_client":     map[string]any{"detour": model.RuleSetDetourTag},
 					"update_interval": "7d",
 				},
 			},

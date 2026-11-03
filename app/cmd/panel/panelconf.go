@@ -145,6 +145,10 @@ username=admin
 
 # 此文件为明文，请注意保管
 password=
+
+# 内核（sing-box / mihomo）不在本文件里配：
+# 面板「设置 → 内核」切换后写进数据目录的 settings.json，重启保持；
+# 启动时强制指定用命令行参数 -engine mihomo。
 `
 	fd, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {

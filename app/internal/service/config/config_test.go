@@ -90,8 +90,9 @@ func TestRenderBuildsOutboundsAndDefaults(t *testing.T) {
 	doc := renderDoc(t, RenderOpts{DataDir: dir}, testNode("a", true), testNode("b", false))
 
 	outbounds := asList(t, doc["outbounds"])
-	if len(outbounds) != 4 {
-		t.Fatalf("outbounds = %d, want 4 (selector+auto+node+direct)", len(outbounds))
+	// selector + auto + node + direct + 规则集下载专用出站
+	if len(outbounds) != 5 {
+		t.Fatalf("outbounds = %d, want 5 (selector+auto+node+direct+rule-set)", len(outbounds))
 	}
 	sel := asMap(t, outbounds[0])
 	if sel["type"] != "selector" || sel["tag"] != "proxy" {
@@ -100,6 +101,12 @@ func TestRenderBuildsOutboundsAndDefaults(t *testing.T) {
 	tags := asList(t, sel["outbounds"])
 	if len(tags) != 3 || tags[0] != "auto" || tags[1] != "direct" || tags[2] != "a" {
 		t.Fatalf("selector tags = %v", tags)
+	}
+	// 规则集下载出站不能出现在 selector 里，否则用户能把它当节点选
+	for _, tg := range tags {
+		if tg == model.RuleSetDetourTag {
+			t.Fatal("规则集下载出站不应进入 selector")
+		}
 	}
 	if got := asMap(t, outbounds[2]); got["tag"] != "a" {
 		t.Fatalf("node outbound = %v", got)

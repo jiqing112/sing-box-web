@@ -1,32 +1,108 @@
 # sing-box panel
 
-面向低配设备（MT7981 / 256 MB）的 sing-box Web 控制面：**单二进制、前端 embed、常驻内存 ~11 MB**。
+面向低配设备（MT7981 / 256 MB）的 sing-box Web 控制面：**单二进制、前端 embed、常驻内存 16 MB（堆 1–2 MB）**。
+内置 **sing-box 与 mihomo 双内核**，可在面板里一键切换。
 已在一台 Debian 13 x86_64 服务器上用两个真实机场订阅完成端到端验证。
+
+## 打开面板：http://127.0.0.1:9090
+
+面板**默认监听 `127.0.0.1:9090`**，浏览器直接开 <http://127.0.0.1:9090>，
+用户名 `admin`，密码是启动时打印的随机串（写在 `data/initial-password`），
+或者用 `-password` 自己指定：
+
+```sh
+./panel -data ./data -listen 127.0.0.1:9090 -password admin123456
+```
+
+所有端口一览（都能在面板里改）：
+
+| 用途 | 默认地址 | 改法 |
+| --- | --- | --- |
+| **面板 Web / API** | **`127.0.0.1:9090`** | `-listen` 参数或 `panel.conf` 的 `listen=` |
+| Clash API（面板内部读连接/延迟） | `127.0.0.1:9091` | `-clash` 参数 |
+| 本机代理入口（系统代理填这个） | `127.0.0.1:7890` | 面板「设置 → 本机端口」 |
+| 局域网 SOCKS5 / HTTP | `0.0.0.0:1080` / `0.0.0.0:8118` | 「局域网代理」页，默认关闭 |
+| Linux 透明代理 redirect | `0.0.0.0:12345` | 「透明代理」页 |
+| Linux 局域网 DNS 劫持 | `0.0.0.0:5354` | 同上（随透明代理开启） |
+
+端口优先级：**命令行 `-listen` > `panel.conf` 的 `listen=` > 内置默认 `127.0.0.1:9090`**。
+想从局域网访问就改成 `0.0.0.0:9090`（注意同时设置强密码，或只在内网用）。
 
 ## 下载即用（推荐）
 
 到 [Releases](https://github.com/jiqing112/sing-box-web/releases) 下载对应平台的包，
-里面**已经带好了对应平台的 sing-box 内核**，解压就能跑，不需要装 Go、不需要自己找内核。
+里面**已经带好了对应平台的两个内核**（sing-box + mihomo），解压就能跑，
+不需要装 Go、不需要自己找内核。
 
 | 平台 | 文件 | 用法 |
 | --- | --- | --- |
 | Windows x64 | `sing-box-web-*-windows-amd64.zip` | 解压 → 双击 `start.bat` → 浏览器自动打开面板 |
 | Linux x64 | `sing-box-web-*-linux-amd64.tar.gz` | 解压 → `sudo ./install.sh` |
 | Linux arm64 | `sing-box-web-*-linux-arm64.tar.gz` | 同上（ARM 路由器 / 小主机） |
+| Linux mipsle | `sing-box-web-*-linux-mipsle.tar.gz` | MT7621 软浮点 MIPS 老路由（Cudy AC1200 等），纯静态 |
 
 - 每个包都附 `.sha256` 校验文件。
 - 首次启动会生成随机密码，Windows 在 `panel-data\initial-password`，
   Linux 在 `/opt/sing-box-panel/data/initial-password`（安装脚本会直接打印出来）。
-- 包里的 sing-box 版本随发布固定（当前 **1.14.3**），面板会自动在同目录 / `/usr/local/bin` 找到它。
-- 发新版时 GitHub Actions 会自动重新下载对应平台的内核并打包，见 `.github/workflows/release.yml`。
+- 包里的内核版本随发布固定（当前 sing-box **1.14.3** / mihomo **1.19.33**），
+  面板会自动在同目录 / `/usr/local/bin` 找到它们。
+- 发新版时 GitHub Actions 会自动重新下载两个内核并打包，见 `.github/workflows/release.yml`。
+
+## 两个内核：sing-box ↔ mihomo
+
+默认用 sing-box，切换入口在 **设置 → 内核**，点一下整套流程自动走完。
+
+| | sing-box | mihomo |
+| --- | --- | --- |
+| 配置文件 | `config.json`（JSON） | `config.yaml`（Clash 系 YAML） |
+| 模板 | `template.json` | `template.yaml` |
+| 校验 | `sing-box check -c config.json` | `mihomo -t -d <data> -f config.yaml` |
+| 启动 | `sing-box run -c config.json` | `mihomo -d <data>/mihomo -f config.yaml` |
+| 工作目录 | 数据目录 | `data/mihomo/`（独立，避免和 sing-box 抢 `cache.db`） |
+| Linux 透明代理 | `redirect` 入站（`0.0.0.0:12345`） | `listeners` 里 `type: redir`（`0.0.0.0:12345`） |
+| TUN 网卡 | `singbox-tun` | `mihomo-tun` |
+
+设计要点：
+
+- **节点只存一份**。订阅解析结果统一存成 sing-box outbound 片段（`nodes-*.json`），
+  渲染 mihomo 配置时翻译成 Clash `proxies`。所以订阅解析、测速、选节点两个内核行为一致。
+- **配置互不覆盖**。两套模板、两套配置、两套快照（`config.json` / `config.yaml`），
+  切过去再切回来，原来那份还在。
+- **切换是事务性的**。停旧核心 → 渲染新配置 → 校验 → 启动 → 探活，
+  任一步失败就把 store / 子进程 / 二进制路径全部回退，并写回旧配置、重启旧核心。
+  切换后如果透明代理规则不再成立（比如端口没人监听），会自动关掉透明代理并提示，
+  不会留下「规则还在但整网断掉」的状态。
+- **geo 数据提前备好，切内核不用等**。mihomo 在工作目录里找不到 `GeoSite.dat` /
+  `geoip.metadb` 时会自己去下载，实测要 31 秒（GeoSite 5 s + MMDB 25 s），这段时间
+  切换请求一直挂着。面板的做法是三层兜底：发布包里 embed 一份（`geodata/fetch.sh`
+  打包，零下载、离线可用）→ 面板启动和切到 sing-box 时后台预取 → 切到 mihomo 前
+  再 `Ensure` 一次。实测切换从 21.2 s 降到 **0.9 s**，缺文件时也能自己补上。
+  两个文件并行下载，单源 8 秒内低于 48 KB/s 自动换镜像（虚拟机 NAT 后面 jsDelivr
+  只有 75 KB/s，gh-proxy 有 2 MB/s）。
+  校验超时也按内核区分（sing-box 15s / mihomo 90s，后者是给「预取失败」留的兜底）。
+- **代理组名与 sing-box 对齐**（`proxy` / `auto`），面板读延迟、切节点不用区分内核。
+
+命令行：
+
+```bash
+panel -engine mihomo                       # 强制用 mihomo（覆盖面板里存的选择）
+panel -sing-box /usr/local/bin/sing-box \
+      -mihomo  /usr/local/bin/mihomo       # 自定义内核路径
+panel -clash 127.0.0.1:9091                # Clash API 地址（面板读连接/延迟靠它）
+```
+
+启动日志会打印当前内核与二进制路径；`GET /api/v1/engine` 会返回两个内核各自的
+可用性、版本与错误原因，前端「设置 → 内核」直接用它渲染。
 
 ## 仓库结构
 
 | 路径 | 内容 |
 | --- | --- |
 | `app/` | **可编译的成品**：Go 后端 + embed 前端 + systemd 单元 |
+| `app/internal/service/engine/` | 内核抽象层：文件名、扩展名、命令行参数、工作目录、版本探测 |
+| `app/internal/service/config/clash.go` | sing-box 节点 → Clash proxy 翻译、mihomo 配置渲染 |
 | `app/deploy/` | 发布包用的部署文件：`panel.conf` 模板、`install.sh`、`start.bat`、systemd 单元 |
-| `.github/workflows/release.yml` | 打 tag 自动编译三平台 + 下载对应 sing-box 内核 + 打包发布 |
+| `.github/workflows/release.yml` | 打 tag 自动编译三平台 + 下载两个内核 + 打包发布 |
 | `web/` | 设计原型（纯静态、模拟数据），用于评审交互与视觉 |
 | `docs/index.html` | 架构设计文档：模块划分、数据流、接口清单、P0 代码骨架、OOM 风险 Top 5 |
 
@@ -46,8 +122,8 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 ./panel -data ./data -listen 127.0.0.1:9090 -password your-pass
 ```
 
-首次启动会生成 `data/settings.json`、`data/template.json`；`data/config.json` 要等你第一次在「配置」页
-保存应用（或触发一次需要重渲染的开关）后才会写入。
+首次启动会生成 `data/settings.json`、`data/template.json`（用 mihomo 时是 `data/template.yaml`）；
+`data/config.json` / `data/config.yaml` 要等你第一次在「配置」页保存应用（或触发一次需要重渲染的开关）后才会写入。
 
 下文出现的 `data/` 一律指 **`-data` 指定的数据目录**，不是系统根目录的 `/data`：
 Linux 默认 `/opt/sing-box-panel/data`，Windows 默认 exe 同级的 `panel-data\`。
@@ -62,25 +138,28 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 `
 
 - 不带 `-data` 时，数据目录默认是 exe 旁边的 `panel-data\`。
 
-### sing-box.exe 的三种部署方式
+### 内核 exe 的三种部署方式
 
-面板按以下顺序定位 sing-box，任选其一：
+面板按以下顺序定位内核（`sing-box.exe` / `mihomo.exe` 各自独立解析），任选其一：
 
-1. **同目录（推荐）**：把官方 `sing-box.exe` 放在面板 exe 旁边，零配置自动发现；
-2. **加入 PATH**：面板找不到同目录的 `sing-box.exe` 时，回退为按 `PATH` 解析 `sing-box.exe`；
-3. **启动参数显式指定**：`panel-windows-amd64.exe -sing-box "D:\tools\sing-box\sing-box.exe"`。
+1. **同目录（推荐）**：把官方 `sing-box.exe`、`mihomo.exe` 放在面板 exe 旁边，零配置自动发现；
+2. **加入 PATH**：面板找不到同目录的 exe 时，回退为按 `PATH` 解析同名程序；
+3. **启动参数显式指定**：`panel-windows-amd64.exe -sing-box "D:\tools\sing-box\sing-box.exe" -mihomo "D:\tools\mihomo\mihomo.exe"`。
 
 方式 3 需要同步修改计划任务/快捷方式的启动参数；方式 2 需要确认面板进程的 PATH 环境
 （计划任务以 SYSTEM 运行时，用的是系统 PATH 而不是用户 PATH）。
+mihomo 是可选的，没有也不影响面板启动，只是「设置 → 内核」里它显示不可用。
 
 - **「透明代理」菜单双平台复用**：Linux 显示 nftables redirect 接管（含局域网 DNS/本机
   接管开关、nftables 规则预览）；Windows 同一菜单显示为「TUN 模式」（虚拟网卡全局接管），
   两边的「局域网代理」设置都可在这页管理。tproxy API 在 Windows 上仍返回明确的
   unsupported 错误；默认模板也不会生成 sing-box 在 Windows 上无法运行的 `redirect` /
   53 端口 DNS 入站（避免核心崩溃循环）。
-- **Windows 全局接管用 TUN 模式**：服务页卡片与「TUN 模式」页一键开关（`GET/PUT /api/v1/tun`）。
-  面板必须以**管理员身份**运行（子进程继承令牌才能创建 wintun 虚拟网卡 `singbox-tun`）；
-  开启后整机流量（包括不走系统代理的程序）经 `auto_route` 进入 sing-box。开关会重新渲染
+- **Windows 全局接管用 TUN 模式**：「TUN 模式」页一键开关（`GET/PUT /api/v1/tun`）。
+  服务页不再重复放一张 TUN 卡（同一状态在两处显示只会让人猜哪个是真的）。
+  面板必须以**管理员身份**运行（子进程继承令牌才能创建虚拟网卡：sing-box 用 `singbox-tun`，
+  mihomo 用 `mihomo-tun`；mihomo 自带 wintun，不需要额外放 dll）；
+  开启后整机流量（包括不走系统代理的程序）经 `auto_route` 进入内核。开关会重新渲染
   配置并重启核心，失败自动回滚。
 - **路由模式**：「TUN 模式 / 透明代理」页顶部提供三档——规则分流（国内直连、其余走节点）、
   全局代理（包括国内流量在内全部走节点）、全局直连。切换会重渲染配置并重启核心，失败自动回滚。
@@ -169,36 +248,278 @@ Register-ScheduledTask -TaskName 'sing-box-panel' -Action $action -Trigger $trig
   （`-Force` 覆盖同名任务即可）。
 - `-data` 显式指定数据目录时不受 exe 位置影响，但同样注意 cache 路径的重渲染。
 
-## 部署（Debian / Ubuntu）
+## 发布与自动构建（GitHub Actions）
 
-发布包里自带 `install.sh`，一条命令装好（面板 + 内核 + systemd 服务 + 开机自启）：
+仓库自带 CI（[`.github/workflows/release.yml`](.github/workflows/release.yml)）：
+
+- **发版**：推送 `v*` 标签即自动构建全部平台并发布 Release——
+
+  ```bash
+  git tag v0.9.8 && git push origin v0.9.8
+  ```
+
+  完成后在 [Releases](https://github.com/jiqing112/sing-box-web/releases) 页面拿到各平台
+  `tar.gz / zip` 与 `.sha256` 校验文件，Release Notes 自动生成。
+- **手动发版**：Actions 页 `release` 工作流支持 `workflow_dispatch`，可以自定义
+  版本号与随包分发的 sing-box / mihomo 版本（不推标签也能发）。
+- **产物矩阵**：
+
+  | 产物 | 面板 | 内置内核 | 适用 |
+  | --- | --- | --- | --- |
+  | `*-linux-amd64.tar.gz` | x86_64 纯静态 | sing-box + mihomo | x86 服务器 / NAS / 软路由 |
+  | `*-linux-arm64.tar.gz` | arm64 纯静态 | sing-box + mihomo | MT7981（AX3000 系）、ARM 盒子 |
+  | `*-linux-mipsle.tar.gz` | mipsle 软浮点纯静态 | sing-box + mihomo (softfloat) | MT7621（Cudy AC1200 等 MIPS 老路由） |
+  | `*-windows-amd64.zip` | x64 | sing-box.exe + mihomo.exe | Windows（TUN 需管理员） |
+
+  面板二进制由 `CGO_ENABLED=0` 编译，**纯静态零依赖**（mipsle 也不需要系统里有
+  musl/libgcc），U 盘、extroot、改过 libc 的固件都能直接跑。
+- **geo 数据内嵌**：CI 打包时会下载 GeoSite.dat / geoip.metadb 并 gzip 后 embed 进面板，
+  切到 mihomo 内核时零下载、离线可用（CDN 失败时自动降级为运行期下载，不阻塞发布）。
+- **升级内核版本**：手动触发时填 `singbox_version` / `mihomo_version` 参数即可，
+  或改 workflow 顶部的默认值。
+
+## 部署指南（事无巨细版）
+
+> 所有流程都在真实环境验证过：Debian 13 服务器（x86_64，双真实机场订阅端到端）、
+> Debian 小主机（Go 版数据迁移）。命令可直接复制执行，版本号换成 Release 页最新即可。
+
+### 第 0 步：选对包
+
+在目标机执行 `uname -m` 对号入座：
+
+| `uname -m` 输出 | 下载包 | 典型设备 |
+| --- | --- | --- |
+| `x86_64` | `*-linux-amd64.tar.gz` | x86 服务器 / NAS / 软路由 |
+| `aarch64` | `*-linux-arm64.tar.gz` | MT7981（红米 AX3000、CR880x 等）、ARM 盒子 |
+| `mipsel` | `*-linux-mipsle.tar.gz` | MT7621（Cudy AC1200、小米 mini 等 MIPS 老路由） |
+| （Windows） | `*-windows-amd64.zip` | Windows 10/11 x64 |
+
+包内清单：`panel`（面板本体，前端已内嵌）、`sing-box` / `mihomo`（双内核）、
+`install.sh`、`panel.conf`、`sing-box-panel.service`、README（Windows 包是 `start.bat`）。
+
+**端口占用总表**（面板里都能改）：
+
+| 端口 | 用途 | 默认监听 |
+| --- | --- | --- |
+| 9090 | 面板 Web | `127.0.0.1`（conf/参数可改 `0.0.0.0`） |
+| 9091 | Clash API（面板内部读状态/测速） | 仅 `127.0.0.1` |
+| 7890 | mixed 入站（系统代理） | 仅 `127.0.0.1` |
+| 12345 | 透明代理 redirect 入站 | `0.0.0.0` |
+| 5354 | 局域网 DNS 劫持入站 | `0.0.0.0` |
+| 1080 / 8118 | 局域网 SOCKS5 / HTTP 代理 | `0.0.0.0`（开关开启时） |
+
+### 场景 A：Debian / Ubuntu 服务器（amd64 / arm64）
+
+#### A1. 下载与校验
 
 ```bash
-tar -xzf sing-box-web-*-linux-amd64.tar.gz
-cd sing-box-web-*-linux-amd64
+curl -fsSL -o /tmp/panel.tgz \
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.8/sing-box-web-v0.9.8-linux-amd64.tar.gz
+
+# 校验完整性（可选但建议）
+curl -fsSL -o /tmp/panel.tgz.sha256 \
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.8/sing-box-web-v0.9.8-linux-amd64.tar.gz.sha256
+cd /tmp && sha256sum -c panel.tgz.sha256
+# 预期输出: sing-box-web-v0.9.8-linux-amd64.tar.gz: OK
+
+tar -xzf /tmp/panel.tgz -C /tmp && cd /tmp/sing-box-web-v0.9.8-linux-amd64
+ls
+# 预期: install.sh  mihomo  panel  panel.conf  README.txt  sing-box  sing-box-panel.service
+```
+
+#### A2. 安装
+
+```bash
 sudo ./install.sh
 ```
 
-手动部署的话：
+脚本做的事（每步都有输出）：
+
+1. 停掉已在运行的旧 `sing-box-panel` 服务（如有）；
+2. `panel` → `/opt/sing-box-panel/bin/panel`，数据目录 `/opt/sing-box-panel/data`；
+3. `sing-box` → `/usr/local/bin/sing-box`，`mihomo` → `/usr/local/bin/mihomo`；
+4. `panel.conf` 只在缺失时安装（不会覆盖你改过的配置）；
+5. 写入并启用 systemd 服务 `sing-box-panel`（开机自启）；
+6. 打印面板地址和初始密码。
+
+#### A3. 首次登录
+
+- 浏览器打开 `http://<本机IP>:9090`，用户名 `admin`。
+- 密码从哪来（优先级从高到低）：
+  1. systemd unit 里显式传的 `PANEL_PASSWORD`（默认注释掉）；
+  2. `panel.conf` 里写了 `password=xxx` → 用它；
+  3. 启动参数 `-password xxx` 或环境变量 `PANEL_PASSWORD`；
+  4. 都没给 → 自动生成随机密码，**安装输出里直接打印**，同时落在
+     `/opt/sing-box-panel/data/initial-password`。
+- 登录后请到「设置 → 访问控制」改掉密码，然后删掉 `initial-password` 文件。
+- 忘记密码：编辑 `/opt/sing-box-panel/bin/panel.conf`，填上 `username=admin` 和
+  新 `password=xxx`，`systemctl restart sing-box-panel` 即完成重置。
+
+#### A4. 第一次上手（面板操作顺序）
+
+1. **订阅页** → 添加订阅：粘贴机场订阅链接，自动识别 Clash YAML / Base64 URI / sing-box JSON；
+   卡片上会显示流量用量与到期时间。
+2. **节点页** → 点测速：延迟缓存 5 分钟；不用的节点把开关关掉。
+3. **配置页** → 校验 → 应用：`sing-box check`（或 mihomo `-t`）通过才会落盘重启；
+   失败自动回滚上一份配置。
+4. **透明代理页 / 局域网代理页**：按需开启。
+5. **首页**确认「运行中」状态与流量曲线；面板里切内核（sing-box ↔ mihomo）一键完成，
+   两边配置与快照互不覆盖。
+
+#### A5. 日常运维
 
 ```bash
-mkdir -p /opt/sing-box-panel/{bin,data}
-cp panel /opt/sing-box-panel/bin/
-install -m755 sing-box /usr/local/bin/sing-box
-cp app/deploy/sing-box-panel.service /etc/systemd/system/
-systemctl daemon-reload && systemctl enable --now sing-box-panel
+systemctl status sing-box-panel        # 面板服务状态（内核是面板子进程）
+systemctl restart sing-box-panel       # 重启面板（连带重启内核）
+journalctl -u sing-box-panel -f        # 面板自身日志
+ss -tlnp | grep -E '9090|9091|7890'    # 端口确认
 ```
 
-面板启动时会自己拉起 `sing-box` 子进程；`KillMode=control-group` 保证停止时整组退出。
+内核运行日志在面板「服务」页（环形缓冲不落盘）；连接与流量在「连接」页实时看。
 
-端口/账户/密码同样可用 exe 旁边的 `panel.conf` 管理（见 Windows 一节的说明）；unit 里显式
-传的 `-listen`、`PANEL_PASSWORD` 优先于配置文件。由于本 unit 固定了
-`-listen 0.0.0.0:9090`，设置页的监听地址会显示固定提示：热切换只对当前进程生效，重启后
-仍回到 unit 中的地址；永久变更请改 unit 后执行 `systemctl daemon-reload && systemctl restart sing-box-panel`。
+#### A6. 升级版本
 
-unit 里的 `PANEL_TOKEN` / `PANEL_PASSWORD` 默认注释掉：不设置时面板首次启动会生成随机口令，
-写入**数据目录**（`-data` 指定的那个目录，默认 `/opt/sing-box-panel/data`）下的 `initial-password`，
-避免把弱口令带上线。注意是数据目录里的 `data/`，不是系统根目录的 `/data`。
+```bash
+systemctl stop sing-box-panel
+sudo install -m 755 新目录/panel /opt/sing-box-panel/bin/panel
+systemctl start sing-box-panel
+```
+
+数据目录不动，订阅 / 节点 / 设置 / 快照全保留。
+
+#### A7. 卸载
+
+```bash
+sudo systemctl disable --now sing-box-panel
+sudo rm -f /etc/systemd/system/sing-box-panel.service /usr/local/bin/sing-box /usr/local/bin/mihomo
+sudo rm -rf /opt/sing-box-panel
+```
+
+#### A8. 透明代理（本机 + 局域网 TCP 接管）
+
+面板「透明代理」页打开总开关即可，nftables `inet singbox` 表由面板自动下发与撤除：
+
+- 「接管网段」默认自动探测本机所在 RFC1918 网段，可手填；
+- 「同时接管本机流量」= output 链也重定向（两种实现见下文「透明代理」章节的原理说明）；
+- 「接管局域网 DNS」= 53 端口重定向到内核 DNS；
+- 目标为内网的流量永远直连；redirect 只接管 TCP，QUIC 自动回落 TCP。
+
+客户端（局域网设备）什么都不用装：**网关和 DNS 都指向本机 IP** 即生效。
+细节、依赖与「本机接管」的两种实现见上文[透明代理](#透明代理)章节。
+
+#### A9. 故障排查速查表
+
+| 症状 | 原因与处理 |
+| --- | --- |
+| 启动报 `listen ...: Address in use` | 9090 被占：`ss -tlnp | grep 9090` 找到占用者，或改 panel.conf 的 listen |
+| 面板开了但核心起不来 | 「服务」页看内核日志；「设置 → 内核」里能看到两个内核的探测结果 |
+| 应用配置失败 | 内核 check 不过，报错原文会透出；先在节点页关掉可疑节点再应用 |
+| 改完配置不生效 | 配置只在「应用」时生效；删订阅后也需要重新应用一次 |
+| 订阅拉取报 403 | 机场按 UA 拦截：面板固定用 `clash-verge/v1.7.7` UA，一般不会；换个网络确认机场本身可达 |
+| 订阅刷新成功但节点没变 | 机场返回 204（内容未变化/限流），面板按「未变化」处理属正常行为 |
+| 测速全是 -1 | 所有节点超时：先确认首页出口 IP；或机场节点本身不可用 |
+| **整网断网了** | 核心没跑但 redirect 规则还在（异常掉电等）：`nft delete table inet singbox` 立即恢复直连；正常关闭面板会自动撤表 |
+| 面板密码忘了 | 见 A3「忘记密码」 |
+
+### 场景 B：OpenWrt 路由器（MT7981 / AX3000 / CR880x 等，arm64）
+
+#### B1. 前置检查
+
+```bash
+uname -m                      # 必须是 aarch64
+df -h / /overlay              # 看可用空间；panel ~13MB + 内核（见 B2 空间方案）
+```
+
+面板与内核都是静态二进制，**不需要装任何依赖包**；只有 TUN 模式需要 `kmod-tun`。
+
+#### B2. 下载解压
+
+空间够就直接放路由器；不够就放 U 盘（挂载点下文以 `/mnt/usb` 为例）：
+
+```bash
+# 电脑上执行，Router_IP 换成路由器 LAN IP
+scp sing-box-web-*-linux-arm64.tar.gz root@Router_IP:/tmp
+
+# 路由器上执行
+mkdir -p /opt/sing-box-panel
+tar -xzf /tmp/sing-box-web-*-linux-arm64.tar.gz -C /opt/sing-box-panel --strip-components=1
+cd /opt/sing-box-panel && ls
+# panel  sing-box  mihomo  install.sh  panel.conf  sing-box-panel.service ...
+```
+
+> 16MB flash 机型：内核放不进 flash，改解压到 U 盘
+> `mkdir -p /mnt/usb/singbox && tar -xzf ... -C /mnt/usb/singbox --strip-components=1`，
+> 并确保 U 盘在开机阶段自动挂载（块设备挂载点 / extroot）。
+
+#### B3. 首次启动（先手动跑通，再上自启）
+
+```bash
+cd /opt/sing-box-panel
+./panel -data /opt/sing-box-panel/data -listen 0.0.0.0:9090 -password 你的密码
+# 保持这个 SSH 会话不关，浏览器打开 http://Router_IP:9090 按 A4 流程配置；
+# 配置应用成功后，Ctrl+C 停掉，进入 B4。
+```
+
+#### B4. 开机自启（procd）
+
+面板里「设置 → 开机自启 → 面板」打开开关：检测到 OpenWrt（无 systemd）会自动生成
+`/etc/init.d/sing-box-panel`（START=99，崩溃由 procd `respawn` 自动拉起）并 enable。
+生成后可 `ls -l /etc/rc.d/S99sing-box-panel` 确认；改过安装路径就在面板里把开关关一次再开一次。
+
+#### B5. 透明代理与客户端指向
+
+面板「透明代理」页打开开关（接管网段会自动探测，多网段路由器按需手填）。
+局域网设备**网关与 DNS 都指向路由器 LAN IP** 即被接管；路由器自己发出的流量默认不走代理。
+依赖（nftables / iptables 两种实现）与本机接管的细节见上文[透明代理](#透明代理)章节。
+
+#### B6. TUN 模式（可选）
+
+```bash
+opkg update && opkg install kmod-tun
+```
+
+然后面板里打开 TUN 开关（需要面板以 root 运行，OpenWrt 默认就是）。
+TUN 与 redirect 可同时开：TUN 接管本机，redirect 接管局域网。
+
+#### B7. OpenWrt 特别注意
+
+- 防火墙（fw4）与面板的 nft 表（`inet singbox`）互不干扰；关掉面板开关会自动撤表防断网。
+- 「同时接管本机流量」的 cgroupv2 方案按 systemd 的 cgroup 路径排除面板进程，
+  OpenWrt（procd）下**不建议开启**，局域网接管不受影响（iptables 方案不受此限）。
+- 整网断网的救援命令同 A9 表格（`nft delete table inet singbox` 或停面板服务）。
+
+### 场景 C：MIPS 小路由（Cudy AC1200 / MT7621，16MB flash）
+
+用 `*-linux-mipsle.tar.gz`（软浮点，`GOMIPS=softfloat` 纯静态编译）。
+内存 128MB 够用：面板 ~13MB + 内核真实占用 ~25MB（RSS 里其余是内核可回收的代码页）。
+
+**flash 是唯一硬约束**：16MB flash 刨掉系统通常只剩 1–2MB 可写，而内核解压后 15–20MB，
+所以整体放外置存储：
+
+```bash
+# 插上 U 盘 / TF 卡后（OpenWrt 默认自动挂载到 /mnt/sda1 类路径）
+mount | grep mmc\|sd         # 确认挂载点
+mkdir -p /mnt/usb/singbox
+tar -xzf /tmp/sing-box-web-*-linux-mipsle.tar.gz -C /mnt/usb/singbox --strip-components=1
+cd /mnt/usb/singbox && ./panel -data /mnt/usb/singbox/data -listen 0.0.0.0:9090 -password 你的密码
+```
+
+其余流程与场景 B 完全一致（自启、透明代理、客户端指向）。
+extroot（把 overlay 整体搬到 U 盘）的机器可以无视外置存储注意事项，直接当大 flash 机器用。
+
+### 场景 D：Windows
+
+详见上文 [Windows](#windows) 章节（解压 → 双击 `start.bat` → 浏览器自动打开面板；
+TUN 需管理员；开机自启用面板内开关或计划任务）。
+
+### 首次登录与安全
+
+- 密码来源优先级：命令行 `-password` / `PANEL_PASSWORD`（unit 注释项） > `panel.conf` >
+  自动生成随机密码（写入数据目录 `initial-password`）。
+- `panel.conf` 的 `username` 与 `password` **都留空** = 关闭登录（打开端口直接进首页），
+  只在内网可信环境使用；只留空 password = 保持现有密码。
+- 面板自带登录限速（连续 5 次失败锁 30 秒，逐次翻倍至 15 分钟）与 Bearer token 会话（7 天）。
+- 暴露公网：务必改强密码，或保持 `127.0.0.1` 监听 + 反向代理加鉴权。
 
 ## 界面
 
@@ -229,10 +550,56 @@ unit 里的 `PANEL_TOKEN` / `PANEL_PASSWORD` 默认注释掉：不设置时面�
 3. 目标为内网（`10/8`、`172.16/12`、`192.168/16` 等）的流量直接 `return`；
 4. 关闭开关即删表，流量恢复直连；规则文件落在 `data/tproxy.nft` 便于审计。
 
+### 依赖：nftables 与「本机接管」的两种实现
+
+透明代理依赖 `nft` 命令，**麒麟 V10 SP1 / 部分国产发行版默认没装**，需要先
+`sudo apt install nftables`，否则开启时会直接报「找不到 nft 命令」。
+
+「接管本机流量」要在 `output` 链里排除代理自己的出站，否则 sing-box 的连接会被重定向回自己形成回环。
+面板按 nftables 版本自动选实现：
+
+| nftables 版本 | 排除方式 | 说明 |
+| --- | --- | --- |
+| ≥ 1.0 | `socket cgroupv2 level N "<cgroup>"` | 精确匹配面板所在 cgroup，Debian 13 / Ubuntu 24.04 走这条 |
+| 0.9.x（麒麟 V10 自带 0.9.3） | `meta mark 0x2023` | 核心启动时带 `route.default_mark`，自己给连接打标记，规则按标记放行 |
+
+渲染配置时，root 下会自动写入 `route.default_mark: 8227`（非 root 跳过，因为设 `SO_MARK` 需要
+`CAP_NET_ADMIN`）。如果配置里没有这个字段却要开「接管本机流量」，面板会拒绝并提示先重新渲染应用一次，
+避免规则生效后回环断网。**局域网接管（`local=false`）不受此影响**，0.9.x 上也能正常用。
+
+> 本机 DNS 入站默认监听 `127.0.0.1:53`，但麒麟自带 `dnsmasq` 占着这个端口。面板在渲染和应用配置前会
+> 探测端口可用性，被占用时自动降级到 `5353 / 5335 / 15353 / 25353` 里第一个可用的，并在日志里说明；
+> 全部不可用则摘掉该入站（核心照常工作，只是本机 DNS 接管不可用）。想让 `resolv.conf` 指过来时，
+> 记得用日志里给出的实际端口。
+
 还有一个 **「接管局域网 DNS」** 开关：在 `prerouting` 里把来自 LAN 网段的 53 端口（UDP/TCP）重定向到
 `dns-lan`（`0.0.0.0:5354`），客户端即使把 DNS 指向主路由，也会拿到 sing-box 解析的干净结果。
 代价是这些客户端不再使用路由器 dnsmasq 的本地域名。规则放在 `ip daddr @local_nets return` **之前**，
 否则指向内网 DNS 的查询会被提前放行。
+
+> **mihomo 内核下这套规则完全复用**：`12345` 对应 mihomo 的 redir 入站，`5354` 对应
+> `dns.listen: 0.0.0.0:5354`，都由面板渲染配置时自动写入（只在 Linux 上写，其它平台会删掉，
+> 否则 mihomo 启动失败）。所以切内核不需要重下 nft 规则；面板会重新核对一遍端口是否对得上，
+> 对不上就自动关掉透明代理并提示，避免「规则还在但没人监听」导致整网断掉。
+>
+> ⚠️ mihomo 的 redir 入站**不能写成顶层 `redir-port`**。`redir-port` 的监听地址受
+> `bind-address` / `allow-lan` 支配，默认的 `bind-address: 127.0.0.1` + `allow-lan: false`
+> 会把它绑到 `127.0.0.1:12345`；而 nft 的 redirect 目标是**入接口地址**，局域网客户端连的是
+> `192.168.x.y:12345`，那里没人监听 —— 现象是 nft 规则命中却 `Connection refused`，
+> 看着像「透明代理开了但没用」。删掉 `bind-address` 也没用，`allow-lan: false` 一样锁回环。
+> 所以渲染层改用 `listeners` 显式声明：
+>
+> ```yaml
+> listeners:
+>   - name: redir-in
+>     type: redir
+>     port: 12345
+>     listen: 0.0.0.0
+>     udp: false
+> ```
+>
+> 这样 `mixed-port` 仍然锁在 `127.0.0.1`（系统代理入口不需要对外开放），只有 redir 入站对外。
+> 面板在开启透明代理时会检查这一点：如果入站只绑了回环地址，会明确告警「局域网设备会被拒绝连接」。
 
 另外有一个独立开关 **「同时接管本机流量」**：在 `output` 钩子上做同样的 redirect，
 让服务器自己发起的 TCP 也走代理（`curl ifconfig.me` 会返回代理出口）。
@@ -273,7 +640,17 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 
 - 规则分流模式的路由顺序：`sniff → hijack-dns → 私有地址 direct → geosite-cn direct → geoip-cn direct → final proxy`。
   国内站点直连（实测 baidu 约 0.07s），国外走代理。
-- 规则集用 `remote + binary`，经代理下载，缓存在 `data/cache.db`，7 天更新一次。
+- 规则集用 `remote + binary`，缓存在 `data/cache.db`，7 天更新一次。
+- **规则集下载走 jsDelivr 镜像 + 独立直连出站**，这是两处必须的坑：
+  - `raw.githubusercontent.com` 在境内实测完全不可达（10 秒零字节），默认模板如果指向它，
+    开箱即用必然失败：核心 `FATAL initialize rule-set` → 崩溃循环 → 用户连面板都进不去排查。
+    所以模板改用 `cdn.jsdelivr.net`（实测 1.4 秒可下）。老数据里已经存在的模板会被自动迁移：
+    只精准替换两个内置默认 URL，用户自己改过的值不动，幂等。
+  - 规则集下载**不能挂在节点出站上**（`detour: proxy`），否则「节点全挂 → 下不到规则集 →
+    核心起不来」形成死锁。但也不能 `detour: direct`：sing-box 会报
+    `detour to an empty direct outbound makes no sense`。面板为此单独渲染了一个
+    `{"type":"direct","tag":"rule-set","tcp_fast_open":true}` 出站，只给规则集下载用，
+    不进 selector，用户选不到。
 - 本机 DNS：`dns-in` 入站监听 `127.0.0.1:53`，`/etc/resolv.conf.head` 写入 `nameserver 127.0.0.1`，
   dhcpcd 重新生成 resolv.conf 时仍会把它放在首位；国内域名走 223.5.5.5，其余走 DoH（经代理）。
 - **必须**配合 `{"protocol":"dns","action":"hijack-dns"}` 规则：`direct` 入站本身只是把 DNS 查询当普通连接，
@@ -286,16 +663,18 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 | POST | `/api/v1/auth/login` | 口令换 Bearer Token（关闭登录时返回 `auth_disabled`） |
 | GET | `/api/v1/auth/status` | 公开接口：`required` 表示是否启用登录，前端据此跳过登录页 |
 | PUT | `/api/v1/auth/access` | 面板内登录开关：`{"disabled":true}` 关闭；启用时需带 `username` 与至少 8 位 `password`，旧 Token 全部失效 |
-| GET | `/api/v1/status` | 核心状态、RSS、配置版本、当前出站；含 `listen`、`listen_pinned` |
+| GET | `/api/v1/status` | 核心状态、RSS、配置版本、当前出站；含 `listen`、`listen_pinned`、`engine`、`engine_label`、`engine_bin` |
+| GET/PUT | `/api/v1/engine` | 内核：GET 返回两个内核的可用性 / 版本 / 错误原因；PUT `{"engine":"mihomo"}` 切换（失败自动回退） |
+| GET | `/api/v1/geodata` | mihomo 的 geo 数据状态：`idle` / `downloading` / `ready` / `failed`，含 `missing`、`embedded` |
+| POST | `/api/v1/geodata/prefetch` | 手动触发后台预取，立即返回，进度看上面那个接口 |
 | PUT | `/api/v1/settings/listen` | 热切换监听地址并回写 `panel.conf`：`{"listen":"0.0.0.0:9090"}`；启动参数 `-listen` 固定时返回 `warning` |
 | GET/POST | `/api/v1/subscriptions` | 订阅列表 / 新增（立即拉取解析，可带 `auto`、`interval_hours`） |
 | PUT | `/api/v1/subscriptions/{id}` | 修改自动更新开关 / 间隔（1–720 小时） |
 | POST | `/api/v1/subscriptions/{id}/refresh` | 重新拉取 |
 | GET | `/api/v1/nodes` | 节点 + 内存中的延迟缓存 |
-| POST | `/api/v1/nodes/delay` | 按设置的并发数（默认 3，上限 16）测速，TTL 300s |
-| GET | `/api/v1/config` | 当前配置 + 快照列表 |
+| POST | `/api/v1/nodes/delay` | 按设置的并发数（默认 3，上限 16）测速，TTL 300s || GET | `/api/v1/config` | 当前配置 + 快照列表 |
 | POST | `/api/v1/config/render` | 模板 + 节点合并 |
-| POST | `/api/v1/config/validate` | `sing-box check` |
+| POST | `/api/v1/config/validate` | `sing-box check` / `mihomo -t`（按当前内核） |
 | POST | `/api/v1/config/apply` | check → 快照 → 原子写 → 重启 → 探活 → 失败回滚 |
 | POST | `/api/v1/config/rollback` | 回滚到指定快照 |
 | POST | `/api/v1/service/{start\|stop\|restart}` | 进程控制 |
@@ -305,6 +684,12 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 | WS | `/api/v1/ws/connections` | 连接流，服务端裁剪 + 2s 节流 + 200 条上限（前端另有 REST 兜底） |
 | WS | `/api/v1/ws/traffic` | 上下行速率，2s 一帧 |
 
+> **延迟数字不要跨内核比较。** 面板的延迟来自内核自带的 Clash API
+> `GET /proxies/{name}/delay`，两个内核的测量口径不同：sing-box 每次新建连接并跑完整
+> TLS/reality 握手，mihomo 复用连接池。同一节点、同一时刻实测 sing-box 579 ms、
+> mihomo 145 ms，而两者真实 TTFB 都是 200 ms 左右。切换内核时面板会清空延迟缓存
+> （`ResetDelays`），避免旧内核的数值继续显示造成误判。
+
 ## 实测结果
 
 | 项目 | 数值 |
@@ -312,11 +697,75 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 | 订阅 | 2 个，共解析 56 个节点（自动过滤「剩余流量/套餐到期」等信息占位条目） |
 | 配置 | 1306 行 / 36 KB，`sing-box check` 通过（约 100 ms） |
 | 核心 | sing-box 1.14.3，RSS ~72 MB |
-| 面板 | RSS **10.9–13.5 MB**，二进制 6.7 MB |
+| 面板 | RSS **16 MB**（空闲）/ **22 MB**（浏览器开着、含 geo 内置副本）；二进制 15.8 MB |
 | 代理 | `curl -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204` → 204 |
 | 连接 | 峰值 32 条，前端渲染 200 条上限，2s 节流 |
 | 透明代理 | **已启用**（redirect），接管 3 个网段；netns 模拟客户端访问 YouTube 返回 200 |
+| mihomo 内核 | v1.19.33，配置 106 行 YAML，`mihomo -t` 0.27 s（geo 已预置） |
+| 内核切换 | 双向切换均成功：sing-box **0.77 s**、mihomo **1.15 s**（rule-set 缓存命中后） |
+| geo 预取 | 面板启动后台下 12 MB：本机 3 s、Debian 虚拟机 3 s（并行 + 慢速换源） |
+
+## 内存去哪了
+
+面板常驻 16–22 MB，**Go 堆里只有 1–2 MB**（`GODEBUG=gctrace=1` 实测，每次 GC 后
+`heap_alloc` 都是 1~2 MB）。剩下的按块拆：
+
+| 部分 | 量级 | 说明 |
+| --- | --- | --- |
+| Go 运行时基线 | ~8 MB | 线程栈、GC 元数据、每 P 的分配缓存；空服务也是这个数 |
+| 可执行映像 | ~7 MB | 二进制里被真正执行到的代码页，只读、可被系统回收 |
+| 堆高水位 | 0~5 MB | 浏览器开着时每 3 s 拉 400 行日志、两个 WebSocket 推送，堆会冲高，GC 后不还 |
+| geo 内置副本 | 0~5 MB | 只在二进制里打包了 geo 时才占，且仅在被读过之后 |
+
+三个已经落地的优化：
+
+1. **geo 内置副本改成 gzip**：12 MB → 5 MB，二进制 22.5 MB → 15.8 MB，
+   解压后进 RSS 的也只有 5 MB 而不是 12 MB。
+2. **解压走流式**：以前 `embed.ReadFile` 会把整份 7.6 MB 读进堆再写盘（峰值多 7.6 MB），
+   现在 `io.Copy` + 32 KB 缓冲，堆占用可以忽略。
+3. **空闲回收**：90 s 没有 API 请求就 `debug.FreeOSMemory()` 把空闲页还给系统。
+   实测（对照程序）：分配 40 MB → GC 后 `Sys` 仍是 46.9 MB、RSS 49.9 MB 不动；
+   `FreeOSMemory` 后 `released` 43.3 MB、RSS 掉回 9.7 MB。**普通 GC 不还内存，只有它才还。**
+
+还可以再压的地方（都有代价，没做）：
+
+- `-ldflags "-s -w"`：二进制 15.8 → 11 MB，磁盘占用变小，RSS 几乎不变（符号表本来也不常驻）。
+- 不打包 geo：RSS 少 5 MB，代价是首次切 mihomo 要自己下 12 MB（3~30 s）。
+- 日志增量拉取（`?since=<seq>`）：现在每 3 s 全量拉 400 行，只影响 GC 频率，不影响峰值。
+- `GOMAXPROCS` 限制到 2~4：每 P 的分配缓存会少一点，但面板本来也不吃 CPU。
 | 主题 | 深/浅双主题，图表配色跟随 CSS 变量重绘 |
+
+### Debian 13 真机双内核实测（sing-box 1.14.3 / mihomo v1.19.33）
+
+在 Debian 13（内核 6.12，nft 1.1.3，root）上做的端到端验证，用 `ip netns` + veth 模拟真实
+局域网客户端（`10.99.0.2`，网关指向本机），两个内核分别跑通：
+
+| 项目 | sing-box | mihomo |
+| --- | --- | --- |
+| 渲染 + 校验 + 应用 | 231 行 JSON，`check` 通过，apply 0.7 s | 配置含 `listeners`/`proxies`/`proxy-groups`，`-t` 通过 |
+| mixed 系统代理 | `127.0.0.1:7890` → 204 | `127.0.0.1:7890` → 204 |
+| 透明代理入站 | `0.0.0.0:12345`（redirect） | `0.0.0.0:12345`（`listeners` 的 redir） |
+| netns 客户端 HTTPS | 204（0.16 s） | 204（0.16 s） |
+| netns 客户端 DNS 劫持 | 生效（`0.0.0.0:5354`） | 生效（`0.0.0.0:5354`） |
+| 连接表证据 | `"type":"redirect/redirect-in"`, `sourceIP 10.99.0.2` | 日志 `[TCP] 10.99.0.2:xxxx --> www.gstatic.com:443 match GeoIP(cn) using DIRECT` |
+| 走节点路径 | `rule_set=geosite-cn => route(direct)` | `[TCP] 10.99.0.2:xxxx --> 1.1.1.1:443 match Match using proxy[本地SS-真实可用]` |
+
+这一轮实测发现并修掉的 6 个真实缺陷（都不是「编译能过」能暴露的）：
+
+1. `ss://` 的 scheme 被直接当成 outbound type，渲染出 `type: ss` → `sing-box check` 报
+   `unknown outbound type: ss`，apply 直接 400。修法：`model.NormalizeOutboundType()`，
+   解析时归一 + 渲染时再归一一次（兼容库里已存的老数据）。
+2. 默认模板的规则集指向 `raw.githubusercontent.com`，境内不可达 → 核心 FATAL 崩溃循环。
+   修法：换 jsDelivr + 对已有模板做幂等迁移（见「分流与 DNS」）。
+3. 规则集 `detour` 指向空 `direct` 被 sing-box 拒绝 → 新增独立的 `rule-set` 直连出站。
+4. `Preflight` 只看 `/sys/module/nf_nat_redirect` 目录，而 Debian 内核是
+   `CONFIG_NF_NAT_REDIRECT=y`（内建，不生成目录）→ 明明能用却报「内核缺少 NAT redirect 支持」。
+   修法：目录不命中时用 `nft -c -f -` 真解析一遍探测。
+5. mihomo 的 `redir-port` 被 `bind-address`/`allow-lan` 绑到回环，LAN 透明代理
+   `Connection refused`（详见「透明代理」一节）。
+6. `SweepOrphans` 只按可执行文件路径清扫，会误杀用户手动起的同款二进制
+   （例如拿同一份 `sing-box` 跑个测试服务端）。修法：再加一条「命令行里必须引用本面板
+   数据目录」，读不到命令行时仍按孤儿处理（宁可多杀也不能漏，漏掉的孤儿会让新核心起不来）。
 
 ## 从 v2rayA 迁移 / 回滚
 
@@ -334,9 +783,18 @@ v2rayA 启动时会自行恢复 nftables 表与透明代理规则。
 
 ## 设计说明
 
+- **内核差异收敛在一个包**：`internal/service/engine` 只回答「当前内核是谁」和
+  「配置叫什么名字、怎么启动、怎么校验、工作目录在哪」，上层（store / supervisor /
+  config / api）不再出现 `if mihomo` 散落各处的分支。加第三个内核只需在这个包里补一个分支。
+- **节点存储与内核解耦**：库里存的始终是 sing-box outbound 片段，mihomo 渲染时才翻译。
+  好处是一份订阅解析结果给两个内核复用，测速/选节点/连接页都不用分叉；
+  代价是翻译层要覆盖协议差异（TLS 的 `sni` vs `servername`、`reality-opts`、
+  `ws` / `grpc` / `http(h2)` 传输），不支持的协议会被跳过而不是写坏配置。
 - UI 采用 shadcn/ui 的视觉语言（token、圆角、边框、badge、switch、dialog、命令面板），
   但**没有引入任何组件库**，全部原语为手写 CSS，约 48 KB。
 - 前端为无框架运行时（原生 JS），与「路由器上不跑 Node、不引入运行时 DOM 框架」的约束一致。
+  所有与内核相关的文案（配置文件名、语言、校验命令、TUN 网卡名）都从 `status.engine` 派生，
+  页面里不写死 sing-box。
 - 延迟、连接、日志全部只在内存：面板重启即清零，不写磁盘。
 - 订阅链接由已登录管理员填写，允许指向内网地址（自建订阅源是合法场景）；面板不按 SSRF
   拦截私有网段。请只把管理端口暴露在可信网络，或放在带鉴权的反向代理之后。

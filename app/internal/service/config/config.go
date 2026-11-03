@@ -7,11 +7,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"singbox-panel/internal/model"
+	"singbox-panel/internal/service/engine"
+	"singbox-panel/internal/service/tproxy"
 	"singbox-panel/internal/store"
 )
 
@@ -19,8 +24,11 @@ import (
 
 // RenderOpts 是需要由面板注入到配置里的运行时选项（模板里不写死）。
 type RenderOpts struct {
+	// Engine 决定渲染成 sing-box JSON 还是 mihomo YAML。
+	// 空值按 sing-box 处理，保持与旧调用点一致。
+	Engine string
 	// DataDir 用于把模板里的相对路径（cache_file.path 等）解析成绝对路径。
-	// 相对路径的解析基准是 sing-box 子进程的工作目录，跨平台、跨启动方式都不可靠。
+	// 相对路径的解析基准是核心子进程的工作目录，跨平台、跨启动方式都不可靠。
 	DataDir    string
 	LanProxy   bool
 	SocksPort  int
@@ -34,12 +42,19 @@ type RenderOpts struct {
 	// 模板是老用户手改过的文件，里面写死的 127.0.0.1:7890 不该成为改端口的唯一途径。
 	MixedPort   int
 	MixedListen string
+	// TproxyPort 是透明代理 redirect 入站的端口；mihomo 用 redir-port 表达，
+	// sing-box 的端口写在模板里（这里只是给 mihomo 用）。
+	TproxyPort int
+	// ClashAddr 是面板要连的 Clash API 地址，两个内核都渲染进配置里，
+	// 保证「面板连的地址」与「内核监听的地址」永远一致。
+	ClashAddr string
 }
 
 // FromSettings 把面板设置映射成渲染选项。
 // 集中一处拼装，避免以后新增字段时漏掉某个调用点（曾经有 5 处重复构造）。
 func FromSettings(set model.Settings, dataDir string) RenderOpts {
 	return RenderOpts{
+		Engine:      engine.Normalize(set.Engine),
 		DataDir:     dataDir,
 		LanProxy:    set.LanProxy,
 		SocksPort:   set.LanSocksPort,
@@ -50,12 +65,90 @@ func FromSettings(set model.Settings, dataDir string) RenderOpts {
 		RoutingMode: set.RoutingMode,
 		MixedPort:   set.MixedPort,
 		MixedListen: set.MixedListen,
+		TproxyPort:  set.TproxyPort,
+		ClashAddr:   set.ClashAddr,
 	}
 }
 
+// DefaultClashAddr 是内核 Clash API 的默认监听地址。
+const DefaultClashAddr = "127.0.0.1:9091"
+
+// ClashController 返回要渲染进配置的控制器地址，未配置时用默认值。
+func (o RenderOpts) ClashController() string {
+	if o.ClashAddr != "" {
+		return o.ClashAddr
+	}
+	return DefaultClashAddr
+}
+
+// DecodeTemplate 按引擎解码模板：sing-box 是 JSON，mihomo 是 YAML。
+func DecodeTemplate(raw []byte, eng string) (map[string]any, error) {
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return map[string]any{}, nil
+	}
+	if engine.IsMihomo(eng) {
+		var m map[string]any
+		if err := yaml.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("模板不是合法 YAML: %w", err)
+		}
+		if m == nil {
+			m = map[string]any{}
+		}
+		return stringifyKeys(m).(map[string]any), nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("模板不是合法 JSON: %w", err)
+	}
+	if m == nil {
+		m = map[string]any{}
+	}
+	return m, nil
+}
+
+// stringifyKeys 把 yaml 解出来的 map[any]any 统一成 map[string]any，
+// 否则后续 json / yaml 序列化都会因为键类型不对而失败。
+func stringifyKeys(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			t[k] = stringifyKeys(val)
+		}
+		return t
+	case map[any]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[fmt.Sprint(k)] = stringifyKeys(val)
+		}
+		return out
+	case []any:
+		for i := range t {
+			t[i] = stringifyKeys(t[i])
+		}
+		return t
+	}
+	return v
+}
+
+// RenderBytes 是给「手里只有模板原文」的调用方用的入口（API 层都是这种）。
+func RenderBytes(tplRaw []byte, nodes []model.Node, opts RenderOpts) ([]byte, error) {
+	tpl, err := DecodeTemplate(tplRaw, opts.Engine)
+	if err != nil {
+		return nil, err
+	}
+	return Render(tpl, nodes, opts)
+}
+
 // Render 把模板与节点片段合并成完整配置。
-// 面板只做 JSON 层的拼装：outbounds 由节点生成，其余字段全部来自模板。
+// 面板只做结构层的拼装：出站/代理由节点生成，其余字段全部来自模板。
 func Render(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, error) {
+	if engine.IsMihomo(opts.Engine) {
+		return RenderClash(tpl, nodes, opts)
+	}
+	return renderSingBox(tpl, nodes, opts)
+}
+
+func renderSingBox(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, error) {
 	var enabled []model.Node
 	for _, n := range nodes {
 		if n.Enabled {
@@ -92,9 +185,20 @@ func Render(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, er
 	for _, n := range enabled {
 		ob := cloneMap(n.Outbound)
 		ob["tag"] = n.Tag
+		// 老版本把 ss:// 的 scheme 直接存成 type=ss，sing-box 不认；
+		// 这里再归一一次，升级后不重新拉订阅也能跑。
+		if t := strVal(ob["type"]); t != "" {
+			ob["type"] = model.NormalizeOutboundType(t)
+		}
 		outbounds = append(outbounds, ob)
 	}
 	outbounds = append(outbounds, map[string]any{"type": "direct", "tag": "direct"})
+	// 规则集下载专用出站（见 model.RuleSetDetourTag 的说明）。
+	// 加 tcp_fast_open 是为了让这个 direct 不是"空 direct"——sing-box 拒绝
+	// 把 http_client.detour 指向空 direct。它不进 selector，用户选不到。
+	outbounds = append(outbounds, map[string]any{
+		"type": "direct", "tag": model.RuleSetDetourTag, "tcp_fast_open": true,
+	})
 
 	merged := cloneMap(tpl)
 	if merged == nil {
@@ -114,6 +218,16 @@ func Render(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, er
 	if _, ok := route["auto_detect_interface"]; !ok {
 		route["auto_detect_interface"] = true
 	}
+	// 给核心自己的出站连接打上 fwmark：「接管本机流量」的 nft 规则靠它
+	// 把代理自身的流量放行掉，否则会被重定向回自己形成回环。
+	// 老版本 nftables（麒麟 V10 自带 0.9.3）没有 socket cgroupv2 匹配，
+	// 只能走这条路；新版 nft 有 cgroup 匹配，这个标记留着也无害。
+	// 只有 root 能设 SO_MARK，非 root 时跳过，避免核心连不上网。
+	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+		if _, ok := route["default_mark"]; !ok {
+			route["default_mark"] = tproxy.Mark
+		}
+	}
 
 	applyRoutingMode(merged, route, opts.RoutingMode)
 	migrateRuleSetHTTPClient(route)
@@ -123,12 +237,17 @@ func Render(tpl map[string]any, nodes []model.Node, opts RenderOpts) ([]byte, er
 		exp = map[string]any{}
 		merged["experimental"] = exp
 	}
-	if _, ok := exp["clash_api"]; !ok {
-		exp["clash_api"] = map[string]any{
-			"external_controller": "127.0.0.1:9091",
-			"default_mode":        "rule",
-		}
+	// clash_api 既要在模板缺失时补上，也要保证控制器地址与面板配置一致：
+	// 地址对不上时面板读不到状态、测速全失败，表现为「核心在跑但面板像死的」。
+	clashAPI, _ := exp["clash_api"].(map[string]any)
+	if clashAPI == nil {
+		clashAPI = map[string]any{"default_mode": "rule"}
+		exp["clash_api"] = clashAPI
 	}
+	if _, ok := clashAPI["default_mode"]; !ok {
+		clashAPI["default_mode"] = "rule"
+	}
+	clashAPI["external_controller"] = opts.ClashController()
 	if cache, _ := exp["cache_file"].(map[string]any); cache != nil && opts.DataDir != "" {
 		if p, _ := cache["path"].(string); p != "" && !filepath.IsAbs(p) {
 			// 旧模板按「数据目录固定叫 data」写成 data/cache.db；数据目录改名后
@@ -278,11 +397,14 @@ type CheckResult struct {
 	Elapsed int64  `json:"elapsed_ms"`
 }
 
-// Check 调用 sing-box check 做唯一权威校验。
+// Check 调用内核自己的校验命令做唯一权威校验：
+// sing-box 用 `check -c`，mihomo 用 `-t -d <home> -f`。
 // check 是独立进程，单独限制内存，避免与运行中的 core 叠加。
-func Check(ctx context.Context, bin string, raw []byte) CheckResult {
+func Check(ctx context.Context, bin, eng, dataDir string, raw []byte) CheckResult {
 	start := time.Now()
-	f, err := os.CreateTemp("", "sb-check-*.json")
+	home := engine.Home(dataDir, eng)
+	ext := engine.Ext(eng)
+	f, err := os.CreateTemp("", "panel-check-*"+ext)
 	if err != nil {
 		return CheckResult{OK: false, Output: err.Error()}
 	}
@@ -293,10 +415,18 @@ func Check(ctx context.Context, bin string, raw []byte) CheckResult {
 	}
 	f.Close()
 
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// mihomo 校验时如果工作目录里没有 geo 数据（GeoSite.dat / geoip.metadb），
+	// 会顺带下载约 12 MB，实测 31 秒。面板会在后台预取（见 geodata 包），
+	// 正常情况下这里几百毫秒就返回；90 秒是给「预取失败、mihomo 自己下载」
+	// 留的兜底余量，不能去掉，否则慢线路下切换会误判成失败。
+	timeout := 15 * time.Second
+	if engine.IsMihomo(eng) {
+		timeout = 90 * time.Second
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(cctx, bin, "check", "-c", f.Name())
+	cmd := exec.CommandContext(cctx, bin, engine.CheckArgs(eng, f.Name(), home)...)
 	cmd.Env = append(os.Environ(), "GOMEMLIMIT=64MiB")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
@@ -315,14 +445,28 @@ func Check(ctx context.Context, bin string, raw []byte) CheckResult {
 
 type Applier struct {
 	store  *store.Store
-	bin    string
 	mu     sync.Mutex
+	bin    string
+	eng    string
+	home   string
 	onSwap func() error // 重启核心
 	probe  func(ctx context.Context) error
 }
 
 func NewApplier(st *store.Store, bin string) *Applier {
-	return &Applier{store: st, bin: bin}
+	return &Applier{store: st, bin: bin, eng: st.Engine(), home: st.Dir()}
+}
+
+// Home 是内核的工作目录（mihomo 的 -d），由数据目录与引擎共同决定。
+func (a *Applier) Home() string { return engine.Home(a.home, a.eng) }
+
+// SetEngine 在切换内核时同步校验/启动用的二进制与参数格式。
+func (a *Applier) SetEngine(bin, eng string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.bin = bin
+	a.eng = engine.Normalize(eng)
+	a.home = a.store.Dir()
 }
 
 func (a *Applier) SetReload(fn func() error)               { a.onSwap = fn }
@@ -333,11 +477,11 @@ func (a *Applier) Apply(ctx context.Context, raw []byte, note string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if !json.Valid(raw) {
-		return fmt.Errorf("配置不是合法 JSON")
+	if err := ValidateDoc(raw, a.eng); err != nil {
+		return err
 	}
-	if res := Check(ctx, a.bin, raw); !res.OK {
-		return &CheckError{Detail: res.Output}
+	if res := Check(ctx, a.bin, a.eng, a.home, raw); !res.OK {
+		return &CheckError{Detail: res.Output, Engine: a.eng}
 	}
 
 	prev, _ := a.store.Config()
@@ -390,8 +534,11 @@ func (a *Applier) Rollback(ctx context.Context, version int) error {
 	if err != nil {
 		return err
 	}
-	if res := Check(ctx, a.bin, raw); !res.OK {
-		return &CheckError{Detail: res.Output}
+	if err := ValidateDoc(raw, a.eng); err != nil {
+		return err
+	}
+	if res := Check(ctx, a.bin, a.eng, a.home, raw); !res.OK {
+		return &CheckError{Detail: res.Output, Engine: a.eng}
 	}
 	cur, _ := a.store.Config()
 	if len(cur) > 0 {
@@ -416,6 +563,11 @@ func (a *Applier) Rollback(ctx context.Context, version int) error {
 	return nil
 }
 
-type CheckError struct{ Detail string }
+type CheckError struct {
+	Detail string
+	Engine string
+}
 
-func (e *CheckError) Error() string { return "sing-box check failed: " + e.Detail }
+func (e *CheckError) Error() string {
+	return engine.Label(e.Engine) + " check failed: " + e.Detail
+}

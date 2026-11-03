@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"singbox-panel/internal/model"
+	"singbox-panel/internal/service/engine"
 	"singbox-panel/internal/store"
 )
 
@@ -335,21 +336,21 @@ func TestVerifyTproxyInbounds(t *testing.T) {
 		{"type":"mixed","listen_port":7890},
 		{"type":"redirect","listen_port":12345},
 		{"type":"direct","listen_port":5354}]}`)
-	if err := VerifyTproxyInbounds(good, 12345, true); err != nil {
+	if err := VerifyTproxyInbounds(good, engine.SingBox, 12345, true); err != nil {
 		t.Fatalf("合法配置被拒绝: %v", err)
 	}
-	if err := VerifyTproxyInbounds(good, 12345, false); err != nil {
+	if err := VerifyTproxyInbounds(good, engine.SingBox, 12345, false); err != nil {
 		t.Fatalf("不接管 DNS 时不应要求 5354: %v", err)
 	}
-	if err := VerifyTproxyInbounds(good, 12346, false); err == nil {
+	if err := VerifyTproxyInbounds(good, engine.SingBox, 12346, false); err == nil {
 		t.Fatal("端口不匹配时应报错")
 	}
 
 	noDNS := []byte(`{"inbounds":[{"type":"redirect","listen_port":12345}]}`)
-	if err := VerifyTproxyInbounds(noDNS, 12345, true); err == nil {
+	if err := VerifyTproxyInbounds(noDNS, engine.SingBox, 12345, true); err == nil {
 		t.Fatal("缺少 DNS 入站时应报错")
 	}
-	if err := VerifyTproxyInbounds(nil, 12345, false); err == nil {
+	if err := VerifyTproxyInbounds(nil, engine.SingBox, 12345, false); err == nil {
 		t.Fatal("空配置应报错")
 	}
 }

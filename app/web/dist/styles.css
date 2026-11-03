@@ -357,6 +357,13 @@ a { color: inherit; text-decoration: none; }
 .crumb b { color: var(--text-2); font-weight: 500; }
 .page-title-sm { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; flex: none; white-space: nowrap; }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+/* 重启核心：从概览 hero 挪到顶栏，常驻可见；窄屏只留图标 */
+.topbar-restart { color: var(--text-3); }
+.topbar-restart:hover { color: var(--text); }
+@media (max-width: 900px) {
+  .topbar-restart { padding: 0 7px; }
+  .topbar-restart span { display: none; }
+}
 
 .chip {
   display: inline-flex;
@@ -608,7 +615,7 @@ a { color: inherit; text-decoration: none; }
 
 .hero {
   display: grid;
-  grid-template-columns: 1fr 268px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   margin-bottom: 12px;
 }
@@ -633,8 +640,7 @@ a { color: inherit; text-decoration: none; }
   mask-image: radial-gradient(420px 240px at 100% 0%, #000, transparent 75%);
   pointer-events: none;
 }
-.hero-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 6px; }
-.hero-body { display: grid; grid-template-columns: minmax(0, 1fr) 288px; gap: 26px; align-items: center; }
+.hero-body { display: grid; grid-template-columns: minmax(0, 1fr) 336px; gap: 32px; align-items: center; }
 
 /* route flow inside hero */
 .flow { position: relative; padding-left: 20px; }
@@ -680,7 +686,7 @@ a { color: inherit; text-decoration: none; }
   font-size: 29px;
   font-weight: 620;
   letter-spacing: -0.035em;
-  margin: 14px 0 0;
+  margin: 0;
   line-height: 1.1;
 }
 .hero-status .glyph {
@@ -696,19 +702,7 @@ a { color: inherit; text-decoration: none; }
 .hero-meta { display: flex; flex-wrap: wrap; gap: 16px 26px; margin-top: 20px; }
 .hero-meta .k { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-4); }
 .hero-meta .v { font-size: 14px; font-variant-numeric: tabular-nums; margin-top: 3px; font-weight: 500; }
-.hero-actions { display: flex; gap: 7px; margin-top: 20px; }
 
-.mem-card { display: flex; flex-direction: column; padding: 16px; }
-.mem-ring { position: relative; width: 100%; display: grid; place-items: center; margin: 4px 0 2px; }
-.mem-ring svg { transform: rotate(-90deg); }
-.mem-center { position: absolute; text-align: center; }
-.mem-center .n { font-size: 22.5px; font-weight: 620; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
-.mem-center .n span { font-size: 11px; color: var(--text-3); font-weight: 500; }
-.mem-center .l { font-size: 11px; color: var(--text-4); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 1px; }
-.mem-legend { display: flex; flex-direction: column; gap: 7px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line); }
-.mem-legend div { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-3); }
-.mem-legend .sw { width: 6px; height: 6px; border-radius: 2px; }
-.mem-legend b { margin-left: auto; color: var(--text-2); font-weight: 500; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 11.5px; }
 
 /* ------------------------------------------------------------ grid utils */
 
@@ -858,8 +852,57 @@ select.input option { background: var(--elevated); }
 .seg button:hover { color: var(--text-2); }
 .seg button.on { background: var(--btn-hover); color: var(--text); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06); }
 .seg button:disabled { opacity: 0.5; cursor: default; }
-.route-seg { display: flex; width: 100%; }
-.route-seg button { flex: 1; height: 30px; font-size: 12px; }
+
+/* 大号 tab 组：内核切换、路由模式。选中态必须一眼看出来，
+   所以用强调色描边 + 强调色文字 + 圆点，而不是只换一档灰底。 */
+.seg-tabs {
+  display: flex;
+  width: 100%;
+  gap: 4px;
+  padding: 4px;
+  background: var(--field);
+  border: 1px solid var(--line-2);
+  border-radius: 11px;
+}
+.seg-tabs button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease),
+    border-color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+}
+.seg-tabs button:hover { color: var(--text-2); background: var(--btn-hover); }
+.seg-tabs button.on {
+  color: var(--lime);
+  font-weight: 560;
+  background: var(--lime-soft);
+  border-color: var(--lime-line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+.seg-tabs button.on::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 0 3px var(--lime-soft);
+}
+.seg-tabs button:disabled { opacity: 0.55; cursor: default; }
+.seg-tabs button:disabled:hover { background: transparent; color: var(--text-3); }
+/* 内核只有两项，铺满整行会显得松散 */
+#engineSeg { max-width: 340px; }
 
 /* ------------------------------------------------------------ tabs */
 
@@ -1374,8 +1417,6 @@ select.input option { background: var(--elevated); }
   .nav-item.active::before { display: none; }
   .side-scroll { padding: 4px 8px; }
   .hero { grid-template-columns: 1fr; }
-  .mem-card { flex-direction: row; align-items: center; gap: 16px; }
-  .mem-legend { flex: 1; border-top: none; padding-top: 0; }
 }
 @media (max-width: 720px) {
   .content { padding: 18px 14px 60px; }
@@ -1391,14 +1432,11 @@ select.input option { background: var(--elevated); }
   .hero-status { font-size: 24px; }
   .hero-main { padding: 16px; }
   .hero-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
-  .hero-actions { flex-wrap: wrap; }
   .summary { grid-template-columns: 1fr 1fr; }
   .summary > div:nth-child(2) { border-right: none; }
   .summary > div:nth-child(1), .summary > div:nth-child(2) { border-bottom: 1px solid var(--line); }
   .grid-2b, .grid-3, .mode-grid { grid-template-columns: 1fr; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mem-card { flex-direction: column; align-items: stretch; }
-  .mem-legend { border-top: 1px solid var(--line); padding-top: 10px; }
   .stat-value { font-size: 21.5px; }
   .toolbar { gap: 6px; }
   .input.search { width: 100%; }

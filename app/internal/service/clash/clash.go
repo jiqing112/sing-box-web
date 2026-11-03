@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,11 @@ func New(controller string) *Client {
 		delays: map[string]delayEntry{},
 		ttl:    5 * time.Minute,
 	}
+}
+
+// Addr 返回 Clash API 的 host:port，供反向代理拼接目标地址。
+func (c *Client) Addr() string {
+	return strings.TrimPrefix(c.base, "http://")
 }
 
 func (c *Client) SetTTL(d time.Duration) {
@@ -112,6 +118,16 @@ func (c *Client) Delay(ctx context.Context, tag string, timeoutMS int) (int, err
 func (c *Client) storeDelay(tag string, ms int) {
 	c.mu.Lock()
 	c.delays[tag] = delayEntry{MS: ms, At: time.Now().Unix()}
+	c.mu.Unlock()
+}
+
+// ResetDelays 清空延迟缓存。
+// 切换内核后必须调用：sing-box 与 mihomo 的 /proxies/{name}/delay 测量口径不同，
+// 同一节点实测可差 4~6 倍（sing-box 每次新建连接含完整 reality 握手）。
+// 沿用旧内核的数值会让人误以为「换了内核线路变好/变差」。
+func (c *Client) ResetDelays() {
+	c.mu.Lock()
+	c.delays = map[string]delayEntry{}
 	c.mu.Unlock()
 }
 

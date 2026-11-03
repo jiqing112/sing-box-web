@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
 	"singbox-panel/internal/model"
+	"singbox-panel/internal/service/engine"
 )
 
 var ErrRunning = errors.New("sing-box already running")
@@ -54,6 +57,7 @@ type Supervisor struct {
 	mu       sync.Mutex
 	bin      string
 	conf     string
+	eng      string
 	cmd      *exec.Cmd
 	started  time.Time
 	lastErr  string
@@ -72,8 +76,20 @@ const (
 	restartDelay = 2 * time.Second
 )
 
-func New(bin, conf string) *Supervisor {
-	return &Supervisor{bin: bin, conf: conf, logs: NewRing(logCapacity)}
+func New(bin, conf, eng string) *Supervisor {
+	return &Supervisor{bin: bin, conf: conf, eng: engine.Normalize(eng), logs: NewRing(logCapacity)}
+}
+
+// SetEngine 在面板内切换内核时同步可执行文件、配置文件与命令行格式。
+// 配置文件必须一起换：两个内核的文件名不同（config.json / config.yaml），
+// 只换二进制会让新内核去解析旧格式的文件，启动即 FATAL。
+// 调用前必须已 Stop，否则会把新旧参数混在一起。
+func (s *Supervisor) SetEngine(bin, conf, eng string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bin = bin
+	s.conf = conf
+	s.eng = engine.Normalize(eng)
 }
 
 // ResetCrashes 在用户手动启动时清零，避免历史崩溃影响后续自动重启策略。
@@ -104,12 +120,29 @@ func (s *Supervisor) Start() error {
 	if s.cmd != nil {
 		return ErrRunning
 	}
-	cmd := exec.Command(s.bin, "run", "-c", s.conf)
+	bin := s.bin
+	// 带路径分隔符的内核路径必须先转成绝对路径：下面会把子进程的工作目录
+	// 改到数据目录，相对路径（如 ./mihomo.exe）会按新工作目录解析而找不到文件。
+	// 只有纯文件名（mihomo.exe）才交给 PATH 解析。
+	if strings.ContainsAny(bin, `/\`) {
+		if abs, err := filepath.Abs(bin); err == nil {
+			bin = abs
+		}
+	}
+	home := engine.Home(filepath.Dir(s.conf), s.eng)
+	if engine.IsMihomo(s.eng) {
+		// mihomo 的 -d 目录必须存在，否则它会在父目录里直接报错退出
+		_ = os.MkdirAll(home, 0o755)
+	}
+	cmd := exec.Command(bin, engine.RunArgs(s.eng, s.conf, home)...)
 	// sing-box 的 cache_file 在配置里是相对路径（如 data/cache.db），
 	// 解析基准是子进程的工作目录。这里把工作目录显式设为 data 目录的父级，
 	// 这样无论从哪个目录启动面板，cache.db 都能正确落到 <data>/cache.db，
 	// 避免「找不到 cache.db → 核心崩溃循环 → 撤销透明代理」的问题。
-	if dir := filepath.Dir(filepath.Dir(s.conf)); dir != "" {
+	// mihomo 的路径由 -d 决定，工作目录直接给数据目录。
+	if engine.IsMihomo(s.eng) {
+		cmd.Dir = home
+	} else if dir := filepath.Dir(filepath.Dir(s.conf)); dir != "" {
 		cmd.Dir = dir
 	}
 	setupProcessGroup(cmd)
@@ -122,7 +155,7 @@ func (s *Supervisor) Start() error {
 
 	if err := cmd.Start(); err != nil {
 		s.lastErr = err.Error()
-		return fmt.Errorf("start sing-box: %w", err)
+		return fmt.Errorf("start %s: %w", engine.Label(s.eng), err)
 	}
 	s.cmd = cmd
 	s.started = time.Now()
@@ -142,7 +175,7 @@ func (s *Supervisor) Start() error {
 		// stopping 必须在锁内读：Stop() 会在另一个 goroutine 里写它
 		stopping := s.stopping
 		s.mu.Unlock()
-		s.logs.Push(model.LogLine{At: time.Now(), Raw: "[panel] sing-box exited: " + errText(err)})
+		s.logs.Push(model.LogLine{At: time.Now(), Raw: "[panel] " + engine.Label(s.eng) + " exited: " + errText(err)})
 		if s.onExit != nil {
 			s.onExit(err)
 		}

@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Subscription 订阅元数据。原始响应体不入库，只保留解析后的节点。
 type Subscription struct {
@@ -33,6 +36,37 @@ type Node struct {
 	Outbound map[string]any `json:"outbound"`
 }
 
+// RuleSetDetourTag 是「规则集下载」专用出站的 tag。
+//
+// 为什么需要它：sing-box 的 rule_set 支持 http_client.detour 指定下载走哪个出站，
+// 但不允许指向"空 direct 出站"（报 detour to an empty direct outbound makes no sense），
+// 而指向 proxy 又会让「节点全挂 → 下不到规则集 → 核心 FATAL 起不来」变成死锁。
+// 所以渲染时额外生成一个带 tcp_fast_open 的 direct 出站专门用于下载，
+// 它不进 selector，用户选不到。
+const RuleSetDetourTag = "rule-set"
+
+// NormalizeOutboundType 把订阅里常见的简写归一成 sing-box 的 outbound 类型名。
+//
+// v2ray / base64 订阅的 URI scheme 写的是 ss，但 sing-box 只认 shadowsocks；
+// 直接拿 scheme 当 type 会让 `sing-box check` 报
+// "unknown outbound type: ss" 并拒绝启动。
+// Clash 格式的订阅本来就写 shadowsocks，两种来源归一后一致。
+//
+// 渲染时也要再调一次：老版本存进库里的节点仍是 type=ss，
+// 升级后不重新拉订阅也必须能跑起来。
+func NormalizeOutboundType(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "ss", "shadowsocks":
+		return "shadowsocks"
+	case "hy2", "hysteria2":
+		return "hysteria2"
+	case "socks5", "socks":
+		return "socks"
+	default:
+		return strings.ToLower(strings.TrimSpace(t))
+	}
+}
+
 // Snapshot 配置快照。默认保留 3 份。
 type Snapshot struct {
 	Version int       `json:"version"`
@@ -46,6 +80,12 @@ type Settings struct {
 	Listen       string `json:"listen"`
 	Username     string `json:"username"`
 	PasswordHash string `json:"password_hash"`
+	// Engine 是当前驱动的内核：sing-box（默认）或 mihomo。
+	// 空值表示老版本 settings.json，读取时统一按 sing-box 处理。
+	Engine string `json:"engine"`
+	// ClashAddr 是内核的 Clash API 监听地址，面板靠它读状态、测速、拉连接。
+	// 默认 127.0.0.1:9091；本机已有其它 Clash 系客户端占用时可用 -clash 改。
+	ClashAddr string `json:"clash_addr"`
 	// 面板内开关：为 true 时免密码访问，账号密码原样保留，重新启用登录时可恢复
 	LoginDisabled bool   `json:"login_disabled"`
 	KeepSnapshots int    `json:"keep_snapshots"`
@@ -83,6 +123,8 @@ func DefaultSettings() Settings {
 	return Settings{
 		Listen:        "127.0.0.1:9090",
 		Username:      "admin",
+		Engine:        "sing-box",
+		ClashAddr:     "127.0.0.1:9091",
 		KeepSnapshots: 3,
 		DelayTTL:      300,
 		DelayWorkers:  3,
