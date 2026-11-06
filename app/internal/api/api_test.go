@@ -118,7 +118,16 @@ func TestAuthBypassWhenLoginDisabled(t *testing.T) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// 空设置 = 待初始化：业务 API 必须被拦截，逼出首次账户设置流程
 	rec := httptest.NewRecorder()
+	h(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if rec.Code != http.StatusUnauthorized || called {
+		t.Fatalf("needs setup: code=%d called=%v, want 401 false", rec.Code, called)
+	}
+
+	_ = st.SaveSettings(model.Settings{LoginDisabled: true})
+	called = false
+	rec = httptest.NewRecorder()
 	h(rec, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
 	if rec.Code != http.StatusNoContent || !called {
 		t.Fatalf("disabled auth: code=%d called=%v, want 204 true", rec.Code, called)

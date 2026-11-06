@@ -9,19 +9,14 @@ import (
 )
 
 // panelConf 承载 panel.conf 里与部署相关的三项：监听地址、登录账户、登录密码。
-// UsernameSet/PasswordSet 用于区分「没写这一项」和「写了但留空」：
-// 后者同时出现在两项上时表示明确关闭登录。
+// password 非空 = 直接应用该凭据（自动化部署路径）；留空 = 全新面板进入
+// 网页初始化流程（首次启动设置账户密码），已有账户则保持现有密码。
 type panelConf struct {
 	Listen      string
 	Username    string
 	Password    string
 	UsernameSet bool
 	PasswordSet bool
-}
-
-// loginDisabled 仅当两项都显式留空时成立。
-func (c panelConf) loginDisabled() bool {
-	return c.UsernameSet && c.PasswordSet && c.Username == "" && c.Password == ""
 }
 
 // panelConfPath 固定放在 exe 旁边，与 sing-box.exe / panel-data 的发现逻辑一致，

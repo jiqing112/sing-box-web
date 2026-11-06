@@ -44,16 +44,18 @@ func TestUpdatePanelConfListen(t *testing.T) {
 	}
 }
 
-func TestApplyLoginConfDisablesWhenBothBlank(t *testing.T) {
+func TestApplyLoginConfBlankConfKeepsExisting(t *testing.T) {
+	// panel.conf 两项留空 + 已有账户：保持现有凭据（关闭登录只能用面板内开关）
+	hash := loginHash("admin", "old")
 	settings := model.DefaultSettings()
-	settings.PasswordHash = loginHash("admin", "old")
+	settings.PasswordHash = hash
 	conf := panelConf{UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
-	if settings.Username != "" || settings.PasswordHash != "" {
-		t.Fatalf("login not disabled: user=%q hash=%q", settings.Username, settings.PasswordHash)
+	applyLoginConf(&settings, conf, "")
+	if settings.Username != "admin" || settings.PasswordHash != hash {
+		t.Fatalf("existing login changed: user=%q hash=%q", settings.Username, settings.PasswordHash)
 	}
-	if !settings.LoginDisabled {
-		t.Fatal("LoginDisabled flag not set")
+	if settings.LoginDisabled {
+		t.Fatal("LoginDisabled unexpectedly set")
 	}
 }
 
@@ -63,7 +65,7 @@ func TestApplyLoginConfPanelSwitchOffPersists(t *testing.T) {
 	settings.PasswordHash = hash
 	settings.LoginDisabled = true
 	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
+	applyLoginConf(&settings, conf, "")
 	if !settings.LoginDisabled {
 		t.Fatal("panel switch was reset by restart")
 	}
@@ -77,7 +79,7 @@ func TestApplyLoginConfPasswordReenablesPanelSwitch(t *testing.T) {
 	settings.PasswordHash = loginHash("admin", "samepass")
 	settings.LoginDisabled = true
 	conf := panelConf{Username: "admin", Password: "samepass", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
+	applyLoginConf(&settings, conf, "")
 	if settings.LoginDisabled {
 		t.Fatal("password in panel.conf did not re-enable login")
 	}
@@ -88,39 +90,47 @@ func TestApplyLoginConfBlankPasswordKeepsExisting(t *testing.T) {
 	settings := model.DefaultSettings()
 	settings.PasswordHash = hash
 	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
+	applyLoginConf(&settings, conf, "")
 	if settings.PasswordHash != hash || settings.Username != "admin" {
 		t.Fatalf("existing login changed: user=%q hash=%q", settings.Username, settings.PasswordHash)
 	}
 }
 
-func TestApplyLoginConfFreshGeneratesPassword(t *testing.T) {
+func TestApplyLoginConfFreshStaysUninitialized(t *testing.T) {
+	// 全新面板且未提供密码：保持待初始化（hash 空、免密开关关闭、不生成任何密码文件）
 	dir := t.TempDir()
 	settings := model.DefaultSettings()
 	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", dir)
-	if settings.PasswordHash == "" || settings.Username != "admin" {
-		t.Fatalf("login not enabled: user=%q hash=%q", settings.Username, settings.PasswordHash)
+	applyLoginConf(&settings, conf, "")
+	if settings.PasswordHash != "" {
+		t.Fatalf("password hash generated for fresh panel: %q", settings.PasswordHash)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "initial-password")); err != nil {
-		t.Fatalf("initial-password missing: %v", err)
+	if settings.LoginDisabled {
+		t.Fatal("LoginDisabled set; must stay eligible for web setup")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "initial-password")); !os.IsNotExist(err) {
+		t.Fatal("initial-password should no longer be generated")
 	}
 }
 
 func TestApplyLoginConfReenable(t *testing.T) {
 	settings := model.Settings{}
 	conf := panelConf{Username: "admin", Password: "newpass", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
+	applyLoginConf(&settings, conf, "")
 	if settings.Username != "admin" || settings.PasswordHash != loginHash("admin", "newpass") {
 		t.Fatalf("login not re-enabled: user=%q hash=%q", settings.Username, settings.PasswordHash)
 	}
 }
 
-func TestApplyLoginConfUserOnlyStaysDisabled(t *testing.T) {
+func TestApplyLoginConfUserOnlyKeepsUninitialized(t *testing.T) {
+	// 只填用户名不填密码：保留用户名作为初始化默认值，凭据仍待网页设置
 	settings := model.Settings{}
 	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
-	applyLoginConf(&settings, conf, "", t.TempDir())
-	if settings.Username != "" || settings.PasswordHash != "" {
-		t.Fatalf("login unexpectedly enabled: user=%q hash=%q", settings.Username, settings.PasswordHash)
+	applyLoginConf(&settings, conf, "")
+	if settings.Username != "admin" || settings.PasswordHash != "" {
+		t.Fatalf("unexpected state: user=%q hash=%q", settings.Username, settings.PasswordHash)
+	}
+	if settings.LoginDisabled {
+		t.Fatal("LoginDisabled set; must stay eligible for web setup")
 	}
 }

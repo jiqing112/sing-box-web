@@ -34,7 +34,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.7"
+var Version = "0.9.9"
 
 const (
 	// applyTimeout 覆盖「校验 + 重启 + 探活」全过程。mihomo 首次校验会下载
@@ -185,6 +185,7 @@ func (s *Server) Router(static http.Handler) http.Handler {
 
 	mux.HandleFunc("POST /api/v1/auth/login", s.login)
 	mux.HandleFunc("GET /api/v1/auth/status", s.authStatus)
+	mux.HandleFunc("POST /api/v1/auth/setup", s.authSetup)
 	mux.HandleFunc("PUT /api/v1/auth/access", s.auth(s.authAccess))
 	mux.HandleFunc("GET /api/v1/auth/check", s.auth(s.check))
 	mux.HandleFunc("PUT /api/v1/settings/listen", s.auth(s.listenSet))
@@ -277,8 +278,8 @@ func (s *Server) StartIdleTrim() {
 
 /* ------------------------------------------------------------ auth */
 
-// loginRequired 判断面板是否启用登录。面板内开关关闭登录，或用户名和
-// 密码哈希都为空（panel.conf 明确关闭）时，API 与 WebSocket 均不校验 Token。
+// loginRequired 判断面板是否启用登录。面板内开关关闭登录时，
+// API 与 WebSocket 均不校验 Token。
 func loginRequired(set model.Settings) bool {
 	if set.LoginDisabled {
 		return false
@@ -286,13 +287,54 @@ func loginRequired(set model.Settings) bool {
 	return set.Username != "" || set.PasswordHash != ""
 }
 
+// needsSetup 全新面板、还没有任何登录凭据，需要用户在网页上完成首次
+// 账户设置。面板内「允许免密码访问」（LoginDisabled）优先于本状态。
+func needsSetup(set model.Settings) bool {
+	return !set.LoginDisabled && set.PasswordHash == ""
+}
+
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
 	set := s.store.Settings()
 	writeJSON(w, 200, map[string]any{
 		"required":       loginRequired(set),
+		"needs_setup":    needsSetup(set),
 		"username":       set.Username,
 		"login_disabled": set.LoginDisabled,
 	})
+}
+
+// authSetup 首次账户设置：只在「还没有任何凭据」时可用。设置完成后即成为常规登录态。
+func (s *Server) authSetup(w http.ResponseWriter, r *http.Request) {
+	if !needsSetup(s.store.Settings()) {
+		writeErr(w, 400, "already_setup", "面板已完成初始化，请直接登录或在设置里修改")
+		return
+	}
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+		writeErr(w, 400, "bad_request", "无法解析请求体")
+		return
+	}
+	in.Username = strings.TrimSpace(in.Username)
+	if in.Username == "" {
+		writeErr(w, 400, "bad_request", "用户名不能为空")
+		return
+	}
+	if len(in.Password) < 8 {
+		writeErr(w, 400, "weak_password", "密码至少 8 位")
+		return
+	}
+	set := s.store.Settings()
+	set.Username = in.Username
+	set.PasswordHash = hashPassword(in.Username, in.Password)
+	set.LoginDisabled = false
+	if err := s.store.SaveSettings(set); err != nil {
+		writeErr(w, 500, "save_failed", err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "required": true})
 }
 
 // authAccess 面板内的登录开关。关闭时保留现有账号密码哈希，重新启用时
@@ -351,7 +393,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	set := s.store.Settings()
 	if !loginRequired(set) {
-		writeErr(w, 400, "auth_disabled", "面板未启用登录")
+		if needsSetup(set) {
+			writeErr(w, 400, "setup_required", "面板尚未初始化，请先设置登录账户密码")
+		} else {
+			writeErr(w, 400, "auth_disabled", "面板未启用登录")
+		}
 		return
 	}
 	ip := clientIP(r)
@@ -485,7 +531,7 @@ func (s *Server) storeToken(tok string) {
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if loginRequired(s.store.Settings()) && !s.validToken(r) {
+		if st := s.store.Settings(); (loginRequired(st) || needsSetup(st)) && !s.validToken(r) {
 			writeErr(w, 401, "unauthorized", "未登录或登录已过期")
 			return
 		}
@@ -495,7 +541,7 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) authWS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !loginRequired(s.store.Settings()) {
+		if st := s.store.Settings(); !loginRequired(st) && !needsSetup(st) {
 			next(w, r)
 			return
 		}

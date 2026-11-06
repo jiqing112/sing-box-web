@@ -59,3 +59,15 @@ func (s *Server) autostartSet(w http.ResponseWriter, r *http.Request) {
 	}
 	s.autostartGet(w, r)
 }
+
+// —— 供托盘（cmd/panel）等外部调用方使用的导出包装 ——
+// 平台实现（panelAutostart*）是包内私有的，托盘不能直接触达。
+
+// PanelAutostartEnabled 返回面板级开机自启是否已注册。
+func PanelAutostartEnabled() (bool, error) { return panelAutostartEnabled() }
+
+// SetPanelAutostart 注册/取消面板级开机自启。
+func SetPanelAutostart(on bool, dataDir string) error { return setPanelAutostart(on, dataDir) }
+
+// PanelAutostartNote 返回当前平台自启方式的人类可读描述。
+func PanelAutostartNote() string { return panelAutostartNote() }

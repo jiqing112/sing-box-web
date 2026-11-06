@@ -44,3 +44,6 @@
 .idea/
 .DS_Store
 Thumbs.db
+app/*.exe
+app/sing-box.exe
+app/mihomo.exe

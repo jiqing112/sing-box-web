@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -35,6 +34,7 @@ func main() {
 	token := flag.String("token", os.Getenv("PANEL_TOKEN"), "静态 API Token（可选）")
 	password := flag.String("password", os.Getenv("PANEL_PASSWORD"), "登录密码（非空即生效，与 panel.conf 的 password 等价）")
 	autostart := flag.Bool("autostart", true, "启动时自动拉起 sing-box")
+	notray := flag.Bool("notray", false, "禁用 Windows 托盘图标")
 	flag.Parse()
 
 	// 命令行显式指定 -listen 时，面板里的修改只能临时生效，重启后仍以参数为准。
@@ -92,7 +92,7 @@ func main() {
 	if *clashAddr != "" {
 		settings.ClashAddr = *clashAddr
 	}
-	applyLoginConf(&settings, conf, *password, *dataDir)
+	applyLoginConf(&settings, conf, *password)
 	// 已有配置但没有版本号（从旧版本升级）时，从 1 起算
 	if settings.ConfigVersion == 0 {
 		if raw, err := st.Config(); err == nil && len(raw) > 0 {
@@ -226,9 +226,65 @@ func main() {
 	srv.SetListenPinned(listenPinned)
 	log.Printf("panel listening on %s (data=%s, engine=%s, bin=%s)", listenAddr, *dataDir, eng, coreBin)
 
+	// 系统托盘（仅 Windows；-notray / 会话 0 SYSTEM 自启时自动跳过）。
+	// 必须放在监听起来之后：托盘的 tooltip/菜单要展示真实端口。
+	var tray *trayHandle
+	if !*notray {
+		panelAuto, err := api.PanelAutostartEnabled()
+		tray = startTray(trayState{
+			Listen:      listenAddr,
+			CoreRunning: sup.Running(),
+			Autostart:   err == nil && panelAuto,
+		})
+		if tray != nil {
+			go syncTrayState(tray, sup, st)
+		}
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	trayEvents := tray.Events()
+trayLoop:
+	for {
+		select {
+		case <-stop:
+			break trayLoop
+		case ev := <-trayEvents:
+			switch ev {
+			case trayEventExit:
+				break trayLoop
+			case trayEventCoreToggle:
+				if sup.Running() {
+					if err := sup.Stop(); err != nil {
+						log.Printf("托盘停止核心失败: %v", err)
+					}
+				} else if err := sup.Start(); err != nil {
+					log.Printf("托盘启动核心失败: %v", err)
+				}
+			case trayEventCoreRestart:
+				if err := sup.Stop(); err != nil {
+					log.Printf("托盘重启核心失败: %v", err)
+				}
+				if err := sup.Start(); err != nil {
+					log.Printf("托盘重启核心失败: %v", err)
+				}
+			case trayEventAutostartToggle:
+				on := false
+				if en, err := api.PanelAutostartEnabled(); err == nil {
+					on = en
+				}
+				if err := api.SetPanelAutostart(!on, *dataDir); err != nil {
+					log.Printf("切换开机自启失败: %v", err)
+				} else {
+					log.Printf("开机自启已切换为 %v（%s）", !on, api.PanelAutostartNote())
+				}
+			}
+			if tray != nil {
+				tray.Update(func(s *trayState) { s.CoreRunning = sup.Running() })
+			}
+		}
+	}
+	tray.Remove()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
@@ -245,22 +301,17 @@ func main() {
 	log.Println("bye")
 }
 
-func randomPass() string {
-	b := make([]byte, 9)
-	_, _ = rand.Read(b)
-	return hex.EncodeToString(b)
-}
-
 func loginHash(user, pass string) string {
 	sum := sha256.Sum256([]byte(user + ":" + pass))
 	return hex.EncodeToString(sum[:])
 }
 
 // applyLoginConf 把 panel.conf/启动参数里的账户密码落到 settings。
-// panel.conf 显式把 username 与 password 都留空表示关闭登录；只留空 password
-// 则保持现有密码不变。首次启动且没有关闭登录时，未提供密码会随机生成并写 initial-password。
+// 全新面板（无密码哈希）且没有提供密码时保持「待初始化」状态，由用户
+// 在网页上完成首次账户设置，不再自动生成随机密码；提供密码则直接应用
+// （自动化部署路径）。关闭登录只能用面板内开关，panel.conf 不再承担。
 // 哈希以「用户名:密码」为基，所以改用户名必须同时提供密码，否则本次修改会被忽略。
-func applyLoginConf(settings *model.Settings, conf panelConf, flagPass, dataDir string) {
+func applyLoginConf(settings *model.Settings, conf panelConf, flagPass string) {
 	pass := flagPass
 	if pass == "" {
 		pass = conf.Password
@@ -270,30 +321,13 @@ func applyLoginConf(settings *model.Settings, conf panelConf, flagPass, dataDir 
 		user = conf.Username
 	}
 
-	// 命令行/环境变量显式给了密码时仍以密码为准，不关闭登录。
-	if flagPass == "" && conf.loginDisabled() {
-		if settings.Username != "" || settings.PasswordHash != "" {
-			log.Printf("面板登录已关闭（panel.conf 的 username 与 password 均为空）")
-		}
-		settings.Username = ""
-		settings.PasswordHash = ""
-		settings.LoginDisabled = true
-		return
-	}
-
 	if settings.PasswordHash == "" {
-		// 已处于免登录状态，本次又没提供密码：保持关闭，避免突然生成随机密码。
-		if settings.Username == "" && pass == "" {
-			settings.LoginDisabled = true
-			if conf.Username != "" {
-				log.Printf("panel.conf 只填写了用户名、未填写 password，登录保持关闭")
-			}
-			return
-		}
+		// 全新面板：没有密码就交给网页初始化流程（needs_setup），
+		// conf/参数预填的用户名保留下来作为默认值。
 		if pass == "" {
-			pass = randomPass()
-			_ = os.WriteFile(filepath.Join(dataDir, "initial-password"), []byte(pass+"\n"), 0o600)
-			log.Printf("初始密码已写入 %s", filepath.Join(dataDir, "initial-password"))
+			settings.Username = user
+			settings.LoginDisabled = false
+			return
 		}
 		if user == "" {
 			user = "admin"
@@ -317,5 +351,29 @@ func applyLoginConf(settings *model.Settings, conf panelConf, flagPass, dataDir 
 		settings.Username = user
 		settings.PasswordHash = hash
 		log.Printf("登录账户/密码已更新（来自 panel.conf 或启动参数）")
+	}
+}
+
+// syncTrayState 把核心运行态/监听地址/自启开关同步进托盘（tooltip 与菜单勾选态）。
+// sup.Running 与 store 读都是内存操作，3 秒轮询零成本；自启查询要起
+// schtasks/systemctl 子进程，放宽到 30 秒一次。
+func syncTrayState(t *trayHandle, sup *supervisor.Supervisor, st *store.Store) {
+	n := 0
+	for {
+		time.Sleep(3 * time.Second)
+		listen := st.Settings().Listen
+		checkAuto := n%10 == 0
+		n++
+		t.Update(func(s *trayState) {
+			s.CoreRunning = sup.Running()
+			if listen != "" {
+				s.Listen = listen
+			}
+			if checkAuto {
+				if en, err := api.PanelAutostartEnabled(); err == nil {
+					s.Autostart = en
+				}
+			}
+		})
 	}
 }

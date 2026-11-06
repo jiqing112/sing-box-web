@@ -206,6 +206,7 @@ jobs:
           cp dist/mihomo.exe   "stage/$pkg/mihomo.exe"
           cp app/deploy/panel.conf        "stage/$pkg/panel.conf"
           cp app/deploy/start.bat         "stage/$pkg/start.bat"
+          cp app/deploy/panel.bat         "stage/$pkg/panel.bat"
           cp app/deploy/README-windows.txt "stage/$pkg/README.txt"
           ( cd stage && zip -r -9 "../out/$pkg.zip" "$pkg" >/dev/null )
           ( cd out && sha256sum "$pkg.zip" > "$pkg.zip.sha256" )

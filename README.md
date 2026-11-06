@@ -7,7 +7,7 @@
 ## 打开面板：http://127.0.0.1:9090
 
 面板**默认监听 `127.0.0.1:9090`**，浏览器直接开 <http://127.0.0.1:9090>，
-用户名 `admin`，密码是启动时打印的随机串（写在 `data/initial-password`），
+首次启动打开面板网页，按引导设置登录账户密码（panel.conf 填 password= 可跳过），
 或者用 `-password` 自己指定：
 
 ```sh
@@ -42,8 +42,8 @@
 | Linux mipsle | `sing-box-web-*-linux-mipsle.tar.gz` | MT7621 软浮点 MIPS 老路由（Cudy AC1200 等），纯静态 |
 
 - 每个包都附 `.sha256` 校验文件。
-- 首次启动会生成随机密码，Windows 在 `panel-data\initial-password`，
-  Linux 在 `/opt/sing-box-panel/data/initial-password`（安装脚本会直接打印出来）。
+- 首次启动打开网页会要求设置登录账户密码；自动化部署在 panel.conf 填
+  `password=` 即跳过网页初始化。
 - 包里的内核版本随发布固定（当前 sing-box **1.14.3** / mihomo **1.19.33**），
   面板会自动在同目录 / `/usr/local/bin` 找到它们。
 - 发新版时 GitHub Actions 会自动重新下载两个内核并打包，见 `.github/workflows/release.yml`。
@@ -137,6 +137,18 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 `
 ```
 
 - 不带 `-data` 时，数据目录默认是 exe 旁边的 `panel-data\`。
+
+### 系统托盘与管理脚本
+
+- **系统托盘**：panel.exe 运行时任务栏右下角有绿菱形托盘图标——**双击打开网页配置**，
+  右键菜单：打开面板 / 启动·停止·重启核心 / 开机自启开关 / 退出（优雅退出，自动停核心）。
+  纯 `syscall` 实现 Shell_NotifyIconW，**零新增依赖**；`-notray` 可关闭；
+  SYSTEM 计划任务自启运行在会话 0，无桌面无托盘，属正常现象。
+- **panel.bat 管理脚本**（发行包内）：双击 = 智能默认——未运行则后台隐藏启动（无黑窗，
+  仅托盘 + 自动开网页），已运行则弹管理菜单；命令行支持 `start / startbg / stop /
+  restart / status / open / autostart-on|off / menu`。自启开关与面板网页操作的是同一个
+  计划任务 `sing-box-panel`，状态互通；`stop` 按数据目录匹配内核，不误伤其他实例。
+  脚本为 GBK 编码（中文 Windows 默认控制台直接可用），编辑后用 `tools/bat_to_gbk.py` 转码。
 
 ### 内核 exe 的三种部署方式
 
@@ -350,8 +362,8 @@ sudo ./install.sh
   2. `panel.conf` 里写了 `password=xxx` → 用它；
   3. 启动参数 `-password xxx` 或环境变量 `PANEL_PASSWORD`；
   4. 都没给 → 自动生成随机密码，**安装输出里直接打印**，同时落在
-     `/opt/sing-box-panel/data/initial-password`。
-- 登录后请到「设置 → 访问控制」改掉密码，然后删掉 `initial-password` 文件。
+     打开网页按引导完成首次账户设置；或在 panel.conf 填 `password=` 后重启。
+- 登录后请到「设置 → 访问控制」改掉密码。
 - 忘记密码：编辑 `/opt/sing-box-panel/bin/panel.conf`，填上 `username=admin` 和
   新 `password=xxx`，`systemctl restart sing-box-panel` 即完成重置。
 
@@ -515,7 +527,7 @@ TUN 需管理员；开机自启用面板内开关或计划任务）。
 ### 首次登录与安全
 
 - 密码来源优先级：命令行 `-password` / `PANEL_PASSWORD`（unit 注释项） > `panel.conf` >
-  自动生成随机密码（写入数据目录 `initial-password`）。
+  全新面板未提供密码时进入网页首次初始化流程。
 - `panel.conf` 的 `username` 与 `password` **都留空** = 关闭登录（打开端口直接进首页），
   只在内网可信环境使用；只留空 password = 保持现有密码。
 - 面板自带登录限速（连续 5 次失败锁 30 秒，逐次翻倍至 15 分钟）与 Bearer token 会话（7 天）。
