@@ -278,6 +278,13 @@ trayLoop:
 				} else {
 					log.Printf("开机自启已切换为 %v（%s）", !on, api.PanelAutostartNote())
 				}
+				if tray != nil {
+					// 立即回读，勾选态不等 30 秒的周期同步
+					go func() {
+						en, err := api.PanelAutostartEnabled()
+						tray.Update(func(s *trayState) { s.Autostart = err == nil && en })
+					}()
+				}
 			}
 			if tray != nil {
 				tray.Update(func(s *trayState) { s.CoreRunning = sup.Running() })

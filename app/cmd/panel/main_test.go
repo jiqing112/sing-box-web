@@ -49,7 +49,7 @@ func TestApplyLoginConfBlankConfKeepsExisting(t *testing.T) {
 	hash := loginHash("admin", "old")
 	settings := model.DefaultSettings()
 	settings.PasswordHash = hash
-	conf := panelConf{UsernameSet: true, PasswordSet: true}
+	conf := panelConf{}
 	applyLoginConf(&settings, conf, "")
 	if settings.Username != "admin" || settings.PasswordHash != hash {
 		t.Fatalf("existing login changed: user=%q hash=%q", settings.Username, settings.PasswordHash)
@@ -64,7 +64,7 @@ func TestApplyLoginConfPanelSwitchOffPersists(t *testing.T) {
 	settings := model.DefaultSettings()
 	settings.PasswordHash = hash
 	settings.LoginDisabled = true
-	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin"}
 	applyLoginConf(&settings, conf, "")
 	if !settings.LoginDisabled {
 		t.Fatal("panel switch was reset by restart")
@@ -78,7 +78,7 @@ func TestApplyLoginConfPasswordReenablesPanelSwitch(t *testing.T) {
 	settings := model.DefaultSettings()
 	settings.PasswordHash = loginHash("admin", "samepass")
 	settings.LoginDisabled = true
-	conf := panelConf{Username: "admin", Password: "samepass", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin", Password: "samepass"}
 	applyLoginConf(&settings, conf, "")
 	if settings.LoginDisabled {
 		t.Fatal("password in panel.conf did not re-enable login")
@@ -89,7 +89,7 @@ func TestApplyLoginConfBlankPasswordKeepsExisting(t *testing.T) {
 	hash := loginHash("admin", "old")
 	settings := model.DefaultSettings()
 	settings.PasswordHash = hash
-	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin"}
 	applyLoginConf(&settings, conf, "")
 	if settings.PasswordHash != hash || settings.Username != "admin" {
 		t.Fatalf("existing login changed: user=%q hash=%q", settings.Username, settings.PasswordHash)
@@ -100,7 +100,7 @@ func TestApplyLoginConfFreshStaysUninitialized(t *testing.T) {
 	// 全新面板且未提供密码：保持待初始化（hash 空、免密开关关闭、不生成任何密码文件）
 	dir := t.TempDir()
 	settings := model.DefaultSettings()
-	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin"}
 	applyLoginConf(&settings, conf, "")
 	if settings.PasswordHash != "" {
 		t.Fatalf("password hash generated for fresh panel: %q", settings.PasswordHash)
@@ -115,7 +115,7 @@ func TestApplyLoginConfFreshStaysUninitialized(t *testing.T) {
 
 func TestApplyLoginConfReenable(t *testing.T) {
 	settings := model.Settings{}
-	conf := panelConf{Username: "admin", Password: "newpass", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin", Password: "newpass"}
 	applyLoginConf(&settings, conf, "")
 	if settings.Username != "admin" || settings.PasswordHash != loginHash("admin", "newpass") {
 		t.Fatalf("login not re-enabled: user=%q hash=%q", settings.Username, settings.PasswordHash)
@@ -125,7 +125,7 @@ func TestApplyLoginConfReenable(t *testing.T) {
 func TestApplyLoginConfUserOnlyKeepsUninitialized(t *testing.T) {
 	// 只填用户名不填密码：保留用户名作为初始化默认值，凭据仍待网页设置
 	settings := model.Settings{}
-	conf := panelConf{Username: "admin", UsernameSet: true, PasswordSet: true}
+	conf := panelConf{Username: "admin"}
 	applyLoginConf(&settings, conf, "")
 	if settings.Username != "admin" || settings.PasswordHash != "" {
 		t.Fatalf("unexpected state: user=%q hash=%q", settings.Username, settings.PasswordHash)

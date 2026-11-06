@@ -15,8 +15,6 @@ type panelConf struct {
 	Listen      string
 	Username    string
 	Password    string
-	UsernameSet bool
-	PasswordSet bool
 }
 
 // panelConfPath 固定放在 exe 旁边，与 sing-box.exe / panel-data 的发现逻辑一致，
@@ -56,10 +54,8 @@ func loadPanelConf() panelConf {
 			c.Listen = v
 		case "username":
 			c.Username = v
-			c.UsernameSet = true
 		case "password":
 			c.Password = v
-			c.PasswordSet = true
 		}
 	}
 	return c
