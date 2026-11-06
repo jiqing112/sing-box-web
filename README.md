@@ -144,6 +144,19 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 `
   右键菜单：打开面板 / 启动·停止·重启核心 / 开机自启开关 / 退出（优雅退出，自动停核心）。
   纯 `syscall` 实现 Shell_NotifyIconW，**零新增依赖**；`-notray` 可关闭；
   SYSTEM 计划任务自启运行在会话 0，无桌面无托盘，属正常现象。
+- **代理模式页**（仅 Windows；Linux 同页为「透明代理」redirect）：
+  - **出口策略：路由模式**——规则分流 / 全局代理 / 全局直连。注意它只对
+    **进入核心的流量**生效，入口没开时普通流量根本不进核心。
+  - **流量入口**（两者至少开其一）：
+    - **系统代理**：一键把当前登录用户的 Windows 系统代理指向面板 mixed 端口
+      （`127.0.0.1:7890`，端口随设置联动）。写完广播 WinInet 刷新，Edge/Chrome
+      **免重启即时生效**；关闭自动还原开启前原值（原 ProxyEnable/Server/Override
+      存于 `panel-data/sysproxy-state.json`）。面板以 SYSTEM 计划任务运行时，
+      自动定位到交互会话真实用户 hive 写入（console 无登录用户时枚举 RDP Active
+      会话），日志明确记录写到哪个用户；普通用户面板直写 HKCU。
+    - **TUN 虚拟网卡**：接管整机流量（含不走系统代理的程序），需管理员。
+  - **状态提示条**：四态实时提示——全关（警示「路由模式不生效」）/ 仅系统代理 /
+    仅 TUN / 双开（提示冗余）。
 - **panel.bat 管理脚本**（发行包内）：双击 = 智能默认——未运行则后台隐藏启动（无黑窗，
   仅托盘 + 自动开网页），已运行则弹管理菜单；命令行支持 `start / startbg / stop /
   restart / status / open / autostart-on|off / menu`。自启开关与面板网页操作的是同一个
@@ -162,18 +175,18 @@ GOOS=windows GOARCH=amd64 CGO_ENABLED=0 `
 （计划任务以 SYSTEM 运行时，用的是系统 PATH 而不是用户 PATH）。
 mihomo 是可选的，没有也不影响面板启动，只是「设置 → 内核」里它显示不可用。
 
-- **「透明代理」菜单双平台复用**：Linux 显示 nftables redirect 接管（含局域网 DNS/本机
-  接管开关、nftables 规则预览）；Windows 同一菜单显示为「TUN 模式」（虚拟网卡全局接管），
+- **「代理模式」菜单双平台复用**：Linux 显示 nftables redirect 接管（含局域网 DNS/本机
+  接管开关、nftables 规则预览）；Windows 同一菜单为「代理模式」（系统代理/TUN 入口 + 路由出口），
   两边的「局域网代理」设置都可在这页管理。tproxy API 在 Windows 上仍返回明确的
   unsupported 错误；默认模板也不会生成 sing-box 在 Windows 上无法运行的 `redirect` /
   53 端口 DNS 入站（避免核心崩溃循环）。
-- **Windows 全局接管用 TUN 模式**：「TUN 模式」页一键开关（`GET/PUT /api/v1/tun`）。
+- **Windows 全局接管用 TUN**：「代理模式」页一键开关（`GET/PUT /api/v1/tun`）。
   服务页不再重复放一张 TUN 卡（同一状态在两处显示只会让人猜哪个是真的）。
   面板必须以**管理员身份**运行（子进程继承令牌才能创建虚拟网卡：sing-box 用 `singbox-tun`，
   mihomo 用 `mihomo-tun`；mihomo 自带 wintun，不需要额外放 dll）；
   开启后整机流量（包括不走系统代理的程序）经 `auto_route` 进入内核。开关会重新渲染
   配置并重启核心，失败自动回滚。
-- **路由模式**：「TUN 模式 / 透明代理」页顶部提供三档——规则分流（国内直连、其余走节点）、
+- **路由模式**：「代理模式 / 透明代理」页提供三档——规则分流（国内直连、其余走节点）、
   全局代理（包括国内流量在内全部走节点）、全局直连。切换会重渲染配置并重启核心，失败自动回滚。
 - Windows 上请使用入站代理：`mixed`（默认 `127.0.0.1:7890`），或在「局域网代理」里开启
   带鉴权的 SOCKS5/HTTP 端口。
@@ -267,7 +280,7 @@ Register-ScheduledTask -TaskName 'sing-box-panel' -Action $action -Trigger $trig
 - **发版**：推送 `v*` 标签即自动构建全部平台并发布 Release——
 
   ```bash
-  git tag v0.9.9 && git push origin v0.9.9
+  git tag v0.9.11 && git push origin v0.9.11
   ```
 
   完成后在 [Releases](https://github.com/jiqing112/sing-box-web/releases) 页面拿到各平台
@@ -326,15 +339,15 @@ Register-ScheduledTask -TaskName 'sing-box-panel' -Action $action -Trigger $trig
 
 ```bash
 curl -fsSL -o /tmp/panel.tgz \
-  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.9/sing-box-web-v0.9.9-linux-amd64.tar.gz
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.11/sing-box-web-v0.9.11-linux-amd64.tar.gz
 
 # 校验完整性（可选但建议）
 curl -fsSL -o /tmp/panel.tgz.sha256 \
-  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.9/sing-box-web-v0.9.9-linux-amd64.tar.gz.sha256
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.11/sing-box-web-v0.9.11-linux-amd64.tar.gz.sha256
 cd /tmp && sha256sum -c panel.tgz.sha256
-# 预期输出: sing-box-web-v0.9.9-linux-amd64.tar.gz: OK
+# 预期输出: sing-box-web-v0.9.11-linux-amd64.tar.gz: OK
 
-tar -xzf /tmp/panel.tgz -C /tmp && cd /tmp/sing-box-web-v0.9.9-linux-amd64
+tar -xzf /tmp/panel.tgz -C /tmp && cd /tmp/sing-box-web-v0.9.11-linux-amd64
 ls
 # 预期: install.sh  mihomo  panel  panel.conf  README.txt  sing-box  sing-box-panel.service
 ```
@@ -637,7 +650,7 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 
 ### 路由模式（全局代理 / 分流）
 
-「透明代理 / TUN 模式」页顶部的「路由模式」卡片对 TUN、透明代理、局域网代理和系统代理同时生效：
+「代理模式（Windows）/ 透明代理（Linux）」页的「路由模式」卡片对 TUN、透明代理、局域网代理和系统代理同时生效：
 
 | 模式 | 行为 | DNS |
 | --- | --- | --- |
@@ -692,6 +705,7 @@ curl -x http://user:pass@192.168.1.10:8118   https://ifconfig.me
 | POST | `/api/v1/service/{start\|stop\|restart}` | 进程控制 |
 | GET/PUT | `/api/v1/autostart` | 开机自启：`panel`=系统级自启（Linux systemd / Windows 计划任务），`core`=面板启动时自动拉起核心 |
 | GET/PUT | `/api/v1/tun` | TUN 模式状态 / 开关（Windows 全局接管，需管理员） |
+| GET/PUT | `/api/v1/sysproxy` | Windows 系统代理：`{"enabled":bool}` 开/关（指向 mixed 端口，还原原值，广播刷新）；GET 返回 `{enabled, server, supported}` |
 | GET/PUT | `/api/v1/routing` | 路由模式：`rule`（国内直连）/ `global`（全部走节点）/ `direct`（全部直连） |
 | WS | `/api/v1/ws/connections` | 连接流，服务端裁剪 + 2s 节流 + 200 条上限（前端另有 REST 兜底） |
 | WS | `/api/v1/ws/traffic` | 上下行速率，2s 一帧 |
