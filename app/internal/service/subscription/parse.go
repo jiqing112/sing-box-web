@@ -199,7 +199,7 @@ func clashToOutbound(p clashProxy) (map[string]any, error) {
 		if _, ok := tls["enabled"]; !ok {
 			tls["enabled"] = true
 		}
-	case "shadowsocks":
+	case "ss", "shadowsocks": // ss 是 Clash 生态的常见写法，统一按 shadowsocks 处理
 		ob["method"] = p.Cipher
 		ob["password"] = p.Password
 	case "hysteria2":

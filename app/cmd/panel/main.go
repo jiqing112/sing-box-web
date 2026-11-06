@@ -176,6 +176,35 @@ func main() {
 			} else {
 				log.Printf("%s 开机自启已在面板里关闭，跳过自动启动", engine.Label(eng))
 			}
+		} else {
+			// 首次运行：还没有已应用配置时自动「渲染→应用」（校验/快照/落盘/
+			// 启动/探活），添加过订阅的部署开箱即跑；best-effort，失败只记日志。
+			autostartCore := *autostart
+			flagExplicit := false
+			flag.Visit(func(f *flag.Flag) {
+				if f.Name == "autostart" {
+					flagExplicit = true
+				}
+			})
+			if !flagExplicit && settings.AutostartCore != nil {
+				autostartCore = *settings.AutostartCore
+			}
+			hasEnabled := false
+			for _, n := range st.AllNodes() {
+				if n.Enabled {
+					hasEnabled = true
+					break
+				}
+			}
+			if !autostartCore {
+				log.Printf("首次启动: 核心自启已在面板里关闭，跳过自动应用")
+			} else if !hasEnabled {
+				log.Printf("首次启动: 暂无启用节点，跳过自动应用（添加订阅后在网页点「启动核心」即可）")
+			} else if err := srv.AutoApply(settings, "首次启动自动应用"); err != nil {
+				log.Printf("首次启动自动应用失败（可在配置页手工重试）: %v", err)
+			} else {
+				log.Printf("首次启动: 配置已自动应用，核心已启动")
+			}
 		}
 	}
 

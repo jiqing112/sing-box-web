@@ -295,6 +295,15 @@ func needsSetup(set model.Settings) bool {
 	return !set.LoginDisabled && set.PasswordHash == ""
 }
 
+func hasEnabledNodes(st *store.Store) bool {
+	for _, n := range st.AllNodes() {
+		if n.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
 // —— 系统代理（Windows）：把登录用户的系统代理指向本面板 mixed 入站 ——
 
 func (s *Server) sysproxyGet(w http.ResponseWriter, r *http.Request) {
@@ -323,6 +332,18 @@ func (s *Server) sysproxySet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.sysproxyGet(w, r)
+}
+
+// AutoApply 首次运行自动应用：渲染 + Apply 一体（校验/快照/落盘/启动/探活/回滚）。
+// 150s 预算盖过 mihomo check 的 90s geo 下载窗口。
+func (s *Server) AutoApply(set model.Settings, note string) error {
+	raw, err := s.renderConfig(set)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+	return s.app.Apply(ctx, raw, note)
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
@@ -810,17 +831,30 @@ func (s *Server) service(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "start":
 		s.sup.ResetCrashes()
-		// 核心没在跑时，配置里的本机 DNS 端口可能已经被系统服务（如 dnsmasq）占了，
-		// 先降级再启动，避免「点了启动就崩溃」。
-		if !s.sup.Running() {
-			if raw, err := s.store.Config(); err == nil && len(raw) > 0 {
-				if fixed, note := config.RepairLocalDNS(raw, 0); note != "" {
-					s.logDNSNote(note)
-					_ = s.store.WriteConfig(fixed)
-				}
+		// 首次使用引导：还没有已应用配置时，「启动」先走渲染+应用一体
+		// （校验/快照/落盘/启动/探活），避免拿不存在的配置文件起进程必然失败。
+		if raw, cfgErr := s.store.Config(); cfgErr == nil && len(raw) == 0 {
+			if !hasEnabledNodes(s.store) {
+				writeErr(w, 400, "no_config", "尚无已应用配置且没有启用节点：请先在「订阅」页添加订阅，节点启用后再启动")
+				return
+			}
+			if err := s.AutoApply(s.store.Settings(), "首次启动自动应用"); err != nil {
+				writeErr(w, 400, "apply_failed", fmt.Sprintf("自动应用配置失败（可在配置页手工重试）: %v", err))
+				return
+			}
+			log.Printf("首次启动: 配置已自动应用，核心已拉起")
+			err = nil
+		} else if !s.sup.Running() {
+			// 核心没在跑时，配置里的本机 DNS 端口可能已经被系统服务（如 dnsmasq）占了，
+			// 先降级再启动，避免「点了启动就崩溃」。
+			if fixed, note := config.RepairLocalDNS(raw, 0); note != "" {
+				s.logDNSNote(note)
+				_ = s.store.WriteConfig(fixed)
 			}
 		}
-		err = s.sup.Start()
+		if err == nil {
+			err = s.sup.Start()
+		}
 		if errors.Is(err, supervisor.ErrRunning) {
 			// 已经在跑：当成成功，避免「启动」按钮弹出无意义的错误
 			err = nil
