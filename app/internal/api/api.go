@@ -34,7 +34,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.9"
+var Version = "0.9.11"
 
 const (
 	// applyTimeout 覆盖「校验 + 重启 + 探活」全过程。mihomo 首次校验会下载
@@ -221,6 +221,8 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/v1/lanproxy", s.auth(s.lanProxyGet))
 	mux.HandleFunc("PUT /api/v1/lanproxy", s.auth(s.lanProxySet))
 	mux.HandleFunc("GET /api/v1/tun", s.auth(s.tunGet))
+	mux.HandleFunc("GET /api/v1/sysproxy", s.auth(s.sysproxyGet))
+	mux.HandleFunc("PUT /api/v1/sysproxy", s.auth(s.sysproxySet))
 	mux.HandleFunc("PUT /api/v1/tun", s.auth(s.tunSet))
 	mux.HandleFunc("GET /api/v1/autostart", s.auth(s.autostartGet))
 	mux.HandleFunc("PUT /api/v1/autostart", s.auth(s.autostartSet))
@@ -291,6 +293,36 @@ func loginRequired(set model.Settings) bool {
 // 账户设置。面板内「允许免密码访问」（LoginDisabled）优先于本状态。
 func needsSetup(set model.Settings) bool {
 	return !set.LoginDisabled && set.PasswordHash == ""
+}
+
+// —— 系统代理（Windows）：把登录用户的系统代理指向本面板 mixed 入站 ——
+
+func (s *Server) sysproxyGet(w http.ResponseWriter, r *http.Request) {
+	st := sysProxyStatus()
+	writeJSON(w, 200, map[string]any{
+		"enabled":   st.Enabled,
+		"server":    st.Server,
+		"supported": sysProxySupported(),
+	})
+}
+
+func (s *Server) sysproxySet(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+		writeErr(w, 400, "bad_request", "无法解析请求体")
+		return
+	}
+	port := s.store.Settings().MixedPort
+	if port <= 0 {
+		port = 7890
+	}
+	if err := sysProxySet(in.Enabled, port, s.store.Dir()); err != nil {
+		writeErr(w, 400, "sysproxy_failed", err.Error())
+		return
+	}
+	s.sysproxyGet(w, r)
 }
 
 func (s *Server) authStatus(w http.ResponseWriter, r *http.Request) {
