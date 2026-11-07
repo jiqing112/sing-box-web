@@ -34,7 +34,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.11"
+var Version = "0.9.12"
 
 const (
 	// applyTimeout 覆盖「校验 + 重启 + 探活」全过程。mihomo 首次校验会下载

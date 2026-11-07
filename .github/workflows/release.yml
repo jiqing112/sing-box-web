@@ -46,6 +46,7 @@ jobs:
           - name: linux-arm64
             goos: linux
             goarch: arm64
+            split: true
             sb_asset: 'sing-box-*-linux-arm64.tar.gz'
             sb_file: sing-box
             mh_asset: 'mihomo-linux-arm64'
@@ -56,6 +57,7 @@ jobs:
             goos: linux
             goarch: mipsle
             gomips: softfloat
+            split: true
             sb_asset: 'sing-box-*-linux-mipsle-softfloat.tar.gz'
             sb_file: sing-box
             mh_asset: 'mihomo-linux-mipsle-softfloat'
@@ -180,26 +182,42 @@ jobs:
         if: matrix.goos == 'linux'
         run: |
           set -e
-          pkg="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
-          mkdir -p "stage/$pkg" out
-          cp dist/panel        "stage/$pkg/panel"
-          cp dist/sing-box     "stage/$pkg/sing-box"
-          cp dist/mihomo       "stage/$pkg/mihomo"
-          cp app/deploy/panel.conf              "stage/$pkg/panel.conf"
-          cp app/deploy/sing-box-panel.service  "stage/$pkg/sing-box-panel.service"
-          cp app/deploy/install.sh              "stage/$pkg/install.sh"
-          cp app/deploy/README-linux.txt        "stage/$pkg/README.txt"
-          chmod 755 "stage/$pkg/panel" "stage/$pkg/sing-box" "stage/$pkg/mihomo" "stage/$pkg/install.sh"
-          chmod 600 "stage/$pkg/panel.conf"
-          tar -czf "out/$pkg.tar.gz" -C stage "$pkg"
-          ( cd out && sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256" )
+          base="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
+
+          # mk <完整包名> [内核文件...]：组一个发行包并归档。
+          mk() {
+            pkg="$1"; shift
+            mkdir -p "stage/$pkg" out
+            cp dist/panel        "stage/$pkg/panel"
+            for c in "$@"; do
+              cp "dist/$c"       "stage/$pkg/$c"
+              chmod 755          "stage/$pkg/$c"
+            done
+            cp app/deploy/panel.conf              "stage/$pkg/panel.conf"
+            cp app/deploy/sing-box-panel.service  "stage/$pkg/sing-box-panel.service"
+            cp app/deploy/install.sh              "stage/$pkg/install.sh"
+            cp app/deploy/README-linux.txt        "stage/$pkg/README.txt"
+            chmod 600 "stage/$pkg/panel.conf"
+            tar -czf "out/$pkg.tar.gz" -C stage "$pkg"
+            ( cd out && sha256sum "$pkg.tar.gz" > "$pkg.tar.gz.sha256" )
+          }
+
+          if [ "${{ matrix.split }}" = "true" ]; then
+            # 路由器/小 ROM 版：单内核分包。双内核解压 150MB+，128MB ROM 放不下；
+            # 两个包里 panel 二进制完全相同，只随附的内核不同。
+            mk "${base}-with-sing-box" sing-box
+            mk "${base}-with-mihomo" mihomo
+          else
+            # x86 版：双内核，包名以 -dual 体现
+            mk "${base}-dual" sing-box mihomo
+          fi
           ls -lh out
 
       - name: 打包（Windows）
         if: matrix.goos == 'windows'
         run: |
           set -e
-          pkg="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}"
+          pkg="sing-box-web-${{ steps.ver.outputs.tag }}-${{ matrix.name }}-dual"
           mkdir -p "stage/$pkg" out
           cp dist/panel.exe    "stage/$pkg/panel.exe"
           cp dist/sing-box.exe "stage/$pkg/sing-box.exe"
@@ -238,14 +256,15 @@ jobs:
           draft: false
           generate_release_notes: true
           body: |
-            开箱即用包：面板二进制 + 对应平台的 **sing-box ${{ env.SINGBOX_VERSION }}** 与 **mihomo ${{ env.MIHOMO_VERSION }}** 内核，解压即跑。
-            两个内核都在包里，默认用 sing-box，可在面板「设置 → 内核」里一键切到 mihomo。
+            开箱即用包：面板二进制 + 对应平台的内核，解压即跑。
 
-            | 平台 | 文件 | 说明 |
-            | --- | --- | --- |
-            | Windows x64 | `*-windows-amd64.zip` | 解压后双击 `start.bat`，浏览器自动打开面板 |
-            | Linux x64 | `*-linux-amd64.tar.gz` | 解压后 `sudo ./install.sh` |
-            | Linux arm64 | `*-linux-arm64.tar.gz` | 同上（路由器 / ARM 小主机） |
+            | 平台 | 文件 | 随附内核 | 说明 |
+            | --- | --- | --- | --- |
+            | Windows x64 | `*-windows-amd64-dual.zip` | sing-box + mihomo | 解压后双击 `start.bat`，浏览器自动打开面板 |
+            | Linux x64 | `*-linux-amd64-dual.tar.gz` | sing-box + mihomo | 解压后 `sudo ./install.sh` |
+            | Linux arm64 | `*-linux-arm64-dual.tar.gz` | sing-box + mihomo | 树莓派 / ARM 小主机 |
+            | Linux mipsle | `*-linux-mipsle-with-sing-box.tar.gz` | 仅 sing-box | 小 ROM 路由器（MT7621 / MT7981 等） |
+            | Linux mipsle | `*-linux-mipsle-with-mihomo.tar.gz` | 仅 mihomo | 同上 |
 
             **Windows 三步**：解压 → 双击 `start.bat` → 用窗口里打印的初始密码登录
             （`admin` / `panel-data\initial-password`）。
@@ -258,6 +277,10 @@ jobs:
             切换内核会重新渲染一份对应格式的配置（`config.json` ↔ `config.yaml`），
             两个内核的配置与快照互不覆盖，切回去还在。发布包里已内置 mihomo 需要的
             geo 数据（`GeoSite.dat` / `geoip.metadb`，约 12 MB），切换不需要联网下载。
+
+            **路由器 / 小 ROM 设备（128MB 级）选 mipsle 单内核包**：双内核解压 150MB+
+            放不下；`-dual` 包供 x86 与 ARM 大存储设备使用，两个 mipsle 包里的
+            panel 二进制完全相同，只随附的内核不同，换内核换个包或官网二进制即可。
 
             每个包都附带 `.sha256` 校验文件。
           files: |

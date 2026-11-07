@@ -34,12 +34,17 @@
 里面**已经带好了对应平台的两个内核**（sing-box + mihomo），解压就能跑，
 不需要装 Go、不需要自己找内核。
 
-| 平台 | 文件 | 用法 |
-| --- | --- | --- |
-| Windows x64 | `sing-box-web-*-windows-amd64.zip` | 解压 → 双击 `start.bat` → 浏览器自动打开面板 |
-| Linux x64 | `sing-box-web-*-linux-amd64.tar.gz` | 解压 → `sudo ./install.sh` |
-| Linux arm64 | `sing-box-web-*-linux-arm64.tar.gz` | 同上（ARM 路由器 / 小主机） |
-| Linux mipsle | `sing-box-web-*-linux-mipsle.tar.gz` | MT7621 软浮点 MIPS 老路由（Cudy AC1200 等），纯静态 |
+| 平台 | 文件 | 随包内核 | 用法 |
+| --- | --- | --- | --- |
+| Windows x64 | `sing-box-web-*-windows-amd64-dual.zip` | sing-box + mihomo | 解压 → 双击 `start.bat` → 浏览器自动打开面板 |
+| Linux x64 | `sing-box-web-*-linux-amd64-dual.tar.gz` | sing-box + mihomo | 解压 → `sudo ./install.sh` |
+| Linux arm64 | `sing-box-web-*-linux-arm64-dual.tar.gz` | sing-box + mihomo | ARM 路由器 / 小主机（同上） |
+| Linux mipsle | `sing-box-web-*-linux-mipsle-with-sing-box.tar.gz` | 仅 sing-box | MT7621 / MT7981 小 ROM 路由，纯静态 |
+| Linux mipsle | `sing-box-web-*-linux-mipsle-with-mihomo.tar.gz` | 仅 mihomo | 同上，偏好 mihomo 的 |
+
+**包名即内容**：`-dual` = 双内核都随包（x86/ARM 大存储设备）；`-with-sing-box` /
+`-with-mihomo` = 单内核路由器包——双内核解压 150MB+，128MB 级 ROM 放不下；两个
+mipsle 包里的 panel 二进制完全相同，只随附的内核不同，换内核换包即可。
 
 - 每个包都附 `.sha256` 校验文件。
 - 首次启动打开网页会要求设置登录账户密码；自动化部署在 panel.conf 填
@@ -280,7 +285,7 @@ Register-ScheduledTask -TaskName 'sing-box-panel' -Action $action -Trigger $trig
 - **发版**：推送 `v*` 标签即自动构建全部平台并发布 Release——
 
   ```bash
-  git tag v0.9.11 && git push origin v0.9.11
+  git tag v0.9.12 && git push origin v0.9.12
   ```
 
   完成后在 [Releases](https://github.com/jiqing112/sing-box-web/releases) 页面拿到各平台
@@ -339,15 +344,15 @@ Register-ScheduledTask -TaskName 'sing-box-panel' -Action $action -Trigger $trig
 
 ```bash
 curl -fsSL -o /tmp/panel.tgz \
-  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.11/sing-box-web-v0.9.11-linux-amd64.tar.gz
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.12/sing-box-web-v0.9.12-linux-amd64-dual.tar.gz
 
 # 校验完整性（可选但建议）
 curl -fsSL -o /tmp/panel.tgz.sha256 \
-  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.11/sing-box-web-v0.9.11-linux-amd64.tar.gz.sha256
+  https://github.com/jiqing112/sing-box-web/releases/download/v0.9.12/sing-box-web-v0.9.12-linux-amd64-dual.tar.gz.sha256
 cd /tmp && sha256sum -c panel.tgz.sha256
-# 预期输出: sing-box-web-v0.9.11-linux-amd64.tar.gz: OK
+# 预期输出: sing-box-web-v0.9.12-linux-amd64-dual.tar.gz: OK
 
-tar -xzf /tmp/panel.tgz -C /tmp && cd /tmp/sing-box-web-v0.9.11-linux-amd64
+tar -xzf /tmp/panel.tgz -C /tmp && cd /tmp/sing-box-web-v0.9.12-linux-amd64-dual
 ls
 # 预期: install.sh  mihomo  panel  panel.conf  README.txt  sing-box  sing-box-panel.service
 ```
