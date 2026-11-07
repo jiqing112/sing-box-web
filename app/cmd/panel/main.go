@@ -64,9 +64,28 @@ func main() {
 	if abs, err := filepath.Abs(*dataDir); err == nil {
 		*dataDir = abs
 	}
+	// 数据目录三级优先：命令行 -data > panel.conf 的 data= > 内置默认。
+	// （统一约定后所有来源都指向 panel-data）
+	dataExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "data" {
+			dataExplicit = true
+		}
+	})
+	if !dataExplicit && conf.Data != "" {
+		*dataDir = conf.Data
+	}
+
 	st, err := store.Open(*dataDir)
 	if err != nil {
 		log.Fatalf("open store: %v", err)
+	}
+
+	// 首次运行防呆：数据目录全新（settings/subs 都不存在）时醒目提示，
+	// 避免「换了个目录跑 → 空面板」被误当成数据丢失。
+	if !dataDirExists(filepath.Join(*dataDir, "settings.json")) &&
+		!dataDirExists(filepath.Join(*dataDir, "subs.json")) {
+		log.Printf("提示: 数据目录 %s 为空（全新安装）。如需接续旧数据，请用 -data 指向原数据目录后重启。", *dataDir)
 	}
 
 	settings := st.Settings()
@@ -337,6 +356,12 @@ trayLoop:
 	log.Println("bye")
 }
 
+
+// dataDirExists 判断路径是否存在
+func dataDirExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
 func loginHash(user, pass string) string {
 	sum := sha256.Sum256([]byte(user + ":" + pass))
 	return hex.EncodeToString(sum[:])

@@ -15,6 +15,9 @@ type panelConf struct {
 	Listen      string
 	Username    string
 	Password    string
+	// Data 数据目录（可选）：panel.conf 写 data=<路径> 可固化数据目录，
+	// 防止忘传/误传 -data 跑错目录。优先级：命令行 -data > 本键 > 默认。
+	Data string
 }
 
 // panelConfPath 固定放在 exe 旁边，与 sing-box.exe / panel-data 的发现逻辑一致，
@@ -52,6 +55,8 @@ func loadPanelConf() panelConf {
 		switch k {
 		case "listen":
 			c.Listen = v
+		case "data":
+			c.Data = v
 		case "username":
 			c.Username = v
 		case "password":

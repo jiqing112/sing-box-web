@@ -11,8 +11,13 @@
 或者用 `-password` 自己指定：
 
 ```sh
-./panel -data ./data -listen 127.0.0.1:9090 -password admin123456
+./panel -listen 127.0.0.1:9090 -password your-pass
 ```
+
+> 数据目录默认在 exe 同目录的 `panel-data`（Linux 安装版为
+> `/opt/sing-box-panel/data`），可用 `-data` 覆盖；也可在 panel.conf 里写
+> `data=<路径>` 固化。首次启动时若数据目录为空，日志会明确提示（全新安装），
+> 避免换目录启动时误以为数据丢失。
 
 所有端口一览（都能在面板里改）：
 
@@ -124,7 +129,7 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
 产物约 **6.7 MB**，内含全部前端资源（`//go:embed all:dist`），运行时不需要 Node。
 
 ```bash
-./panel -data ./data -listen 127.0.0.1:9090 -password your-pass
+./panel -listen 127.0.0.1:9090 -password your-pass
 ```
 
 首次启动会生成 `data/settings.json`、`data/template.json`（用 mihomo 时是 `data/template.yaml`）；
