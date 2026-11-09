@@ -518,7 +518,7 @@ function renderSubs() {
   grid.innerHTML = state.subs.map((s, i) => {
     const pct = s.usage_total ? Math.min(100, (s.usage_used / s.usage_total) * 100) : 0;
     const hours = s.interval_hours > 0 ? s.interval_hours : 24;
-    return `<div class="card sub-card">
+    return `<div class="card sub-card" data-sub="${s.id}" title="点击编辑订阅">
       <div class="sub-head">
         <div class="sub-avatar ${tones[i % 3]}">${esc(s.name.slice(0, 1).toUpperCase())}</div>
         <div class="sub-id">
@@ -558,6 +558,13 @@ function renderSubs() {
 
   $$('[data-refresh]').forEach((b) => (b.onclick = () => refreshSub(b.dataset.refresh, b)));
   $$('[data-del]').forEach((b) => (b.onclick = () => deleteSub(b.dataset.del)));
+  // 单击订阅卡片弹出编辑（按钮 / 开关 / 输入框不触发）
+  $$('.sub-card[data-sub]').forEach((card) => {
+    card.onclick = (e) => {
+      if (e.target.closest('button, input')) return;
+      openEditSub(card.dataset.sub);
+    };
+  });
   $$('[data-auto]').forEach((b) => (b.onclick = () => setSubAuto(b.dataset.auto, !b.classList.contains('on'))));
   $$('[data-save-hours]').forEach((b) => (b.onclick = () => setSubHours(b.dataset.saveHours)));
   $$('[data-hours]').forEach((inp) => (inp.onkeydown = (e) => {
@@ -682,6 +689,75 @@ function openAddSub() {
       toast('err', '添加失败', e.message);
       $('#subOk').disabled = false;
       $('#subOk').textContent = '拉取并解析';
+    }
+  };
+}
+
+function openEditSub(id) {
+  const s = state.subs.find((x) => x.id === id);
+  if (!s) return;
+  $('#dialog').innerHTML = `
+    <div class="dialog-hd">
+      <h3>编辑订阅</h3>
+    </div>
+    <div class="dialog-bd">
+      <div class="field"><label>订阅名称</label><input class="input" id="subName" value="${esc(s.name)}" placeholder="例如：主订阅" /></div>
+      <div class="field"><label>订阅链接</label><input class="input" id="subUrl" value="${esc(s.url)}" placeholder="https://…" /></div>
+      <div class="field">
+        <label>自动更新</label>
+        <div class="form-switch">
+          <button type="button" class="switch sm ${s.auto ? 'on' : ''}" id="subAuto" role="switch" aria-checked="${!!s.auto}"></button>
+          <span class="k">每 <input class="input sub-hours" id="subHours" type="number" min="1" max="720" step="1" value="${s.interval_hours > 0 ? s.interval_hours : 24}" ${s.auto ? '' : 'disabled'} /> 小时</span>
+        </div>
+      </div>
+      <div class="field"><span class="k">修改链接后保存会立即重新拉取该订阅的节点</span></div>
+    </div>
+    <div class="dialog-ft">
+      <button class="btn" onclick="closeDialog(false)">取消</button>
+      <button class="btn primary" id="subOk">保存修改</button>
+    </div>`;
+  $('#dialogOverlay').classList.add('open');
+  const autoBtn = $('#subAuto');
+  const hoursInput = $('#subHours');
+  autoBtn.onclick = () => {
+    const on = autoBtn.classList.toggle('on');
+    autoBtn.setAttribute('aria-checked', String(on));
+    hoursInput.disabled = !on;
+  };
+  $('#subOk').onclick = async () => {
+    const name = $('#subName').value.trim();
+    const url = $('#subUrl').value.trim();
+    if (!url) { toast('err', '缺少订阅链接'); return; }
+    const auto = autoBtn.classList.contains('on');
+    const hours = parseInt(hoursInput.value, 10);
+    if (!Number.isFinite(hours) || hours < 1 || hours > 720) {
+      toast('err', '间隔无效', '请输入 1-720 小时');
+      return;
+    }
+    const patch = {};
+    if (name && name !== s.name) patch.name = name;
+    if (url !== s.url) patch.url = url;
+    if (auto !== s.auto) patch.auto = auto;
+    if (auto && hours !== s.interval_hours) patch.interval_hours = hours;
+    if (!Object.keys(patch).length) { closeDialog(false); return; }
+    const urlChanged = 'url' in patch;
+    $('#subOk').disabled = true;
+    $('#subOk').textContent = '保存中…';
+    try {
+      await api(`/api/v1/subscriptions/${id}`, { method: 'PUT', body: JSON.stringify(patch) });
+      closeDialog(true);
+      if (urlChanged) {
+        toast('ok', '已保存', '链接已修改，正在重新拉取节点…');
+        await refreshSub(id);
+      } else {
+        toast('ok', '已保存', '订阅设置已更新');
+        await loadSubs();
+        renderSubs();
+      }
+    } catch (e) {
+      toast('err', '保存失败', e.message);
+      $('#subOk').disabled = false;
+      $('#subOk').textContent = '保存修改';
     }
   };
 }
@@ -1951,6 +2027,68 @@ $('#asPanelSwitch').onclick = async () => {
     await loadAutostart();
   } finally {
     $('#asPanelSwitch').disabled = false;
+  }
+};
+
+// —— 面板自更新（关于卡）——
+async function loadUpdateStatus() {
+  const badge = $('#updBadge');
+  const btn = $('#updateBtn');
+  if (!badge || !btn) return;
+  badge.textContent = '检查中…';
+  try {
+    const d = await api('/api/v1/update');
+    if (!d.supported) { badge.textContent = '不支持'; badge.className = 'badge'; btn.style.display = 'none'; return; }
+    if (d.has_update) {
+      badge.textContent = `可更新到 v${d.latest}`;
+      badge.className = 'badge amber';
+      btn.textContent = `更新到 v${d.latest}`;
+      btn.dataset.ready = d.latest;
+    } else {
+      badge.textContent = `已是最新 v${d.current}`;
+      badge.className = 'badge lime';
+      btn.textContent = '检查更新';
+      delete btn.dataset.ready;
+    }
+  } catch (e) {
+    badge.textContent = '检查失败';
+    badge.className = 'badge red';
+  }
+  btn.disabled = false;
+}
+
+$('#updateBtn').onclick = async () => {
+  const btn = $('#updateBtn');
+  if (btn.dataset.ready) {
+    const ver = btn.dataset.ready;
+    const ok = await confirmDialog({
+      title: `更新面板到 v${ver}？`,
+      body: '自动下载并替换面板二进制，随后面板自动重启（核心会短暂中断，几秒内自动拉起），页面稍后恢复。',
+      confirm: '更新并重启'
+    });
+    if (!ok) return;
+    btn.disabled = true;
+    badge.textContent = '更新中…';
+    badge.className = 'badge amber';
+    try {
+      await api('/api/v1/update', { method: 'POST' });
+      toast('ok', `面板已更新到 v${ver}`, '面板重启中，页面将在几秒后自动恢复…');
+      // 轮询等新面板起来，然后整页刷新（拿到新版本号与新前端）
+      const poll = setInterval(() => {
+        fetch('/api/v1/auth/status').then((r) => {
+          if (r.ok) { clearInterval(poll); location.reload(); }
+        }).catch(() => {});
+      }, 2000);
+      setTimeout(() => { clearInterval(poll); location.reload(); }, 60000);
+    } catch (e) {
+      toast('err', '更新失败', e.message);
+      btn.disabled = false;
+      loadUpdateStatus();
+    }
+  } else {
+    btn.disabled = true;
+    badge.textContent = '检查中…';
+    await loadUpdateStatus();
   }
 };
 

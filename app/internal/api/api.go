@@ -34,7 +34,7 @@ import (
 
 // Version 面板版本。前端从 /status 读取，避免页面里再写死一份。
 // 用 var 而不是 const：发布流水线通过 -ldflags "-X ...Version=x.y.z" 注入 tag 版本。
-var Version = "0.9.12"
+var Version = "0.9.13"
 
 const (
 	// applyTimeout 覆盖「校验 + 重启 + 探活」全过程。mihomo 首次校验会下载
@@ -221,6 +221,8 @@ func (s *Server) Router(static http.Handler) http.Handler {
 	mux.HandleFunc("GET /api/v1/lanproxy", s.auth(s.lanProxyGet))
 	mux.HandleFunc("PUT /api/v1/lanproxy", s.auth(s.lanProxySet))
 	mux.HandleFunc("GET /api/v1/tun", s.auth(s.tunGet))
+	mux.HandleFunc("GET /api/v1/update", s.auth(s.updateGet))
+	mux.HandleFunc("POST /api/v1/update", s.auth(s.updateSet))
 	mux.HandleFunc("GET /api/v1/sysproxy", s.auth(s.sysproxyGet))
 	mux.HandleFunc("PUT /api/v1/sysproxy", s.auth(s.sysproxySet))
 	mux.HandleFunc("PUT /api/v1/tun", s.auth(s.tunSet))
