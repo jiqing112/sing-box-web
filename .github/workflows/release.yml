@@ -164,6 +164,13 @@ jobs:
           [ -n "$found" ] || { echo "sing-box 内核二进制没找到"; exit 1; }
           cp "$found" "../dist/${{ matrix.sb_file }}"
           chmod +x "../dist/${{ matrix.sb_file }}"
+          # sing-box 1.12+ 官方 zip 已不带 wintun.dll（Windows TUN 需要）：
+          # windows 目标从 wintun.net 官方包补进 dist；失败仅告警不阻断
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            curl -fsSL --connect-timeout 20 -o wintun.zip "https://www.wintun.net/builds/wintun-0.14.1.zip" \
+              && unzip -jo wintun.zip "wintun/bin/amd64/wintun.dll" -d ../dist \
+              || echo "::warning::wintun.dll 获取失败，本包不含 wintun.dll"
+          fi
           cd ../mh
           for f in *; do
             case "$f" in
@@ -222,6 +229,9 @@ jobs:
           cp dist/panel.exe    "stage/$pkg/panel.exe"
           cp dist/sing-box.exe "stage/$pkg/sing-box.exe"
           cp dist/mihomo.exe   "stage/$pkg/mihomo.exe"
+          # Windows TUN 需要 wintun.dll（sing-box 1.12+ 官方 zip 已不带）：
+          # 解内核时从 wintun.net 官方包补进 dist，有就打包，没有仅告警
+          if [ -f dist/wintun.dll ]; then cp dist/wintun.dll "stage/$pkg/wintun.dll"; fi
           cp app/deploy/panel.conf        "stage/$pkg/panel.conf"
           cp app/deploy/start.bat         "stage/$pkg/start.bat"
           cp app/deploy/panel.bat         "stage/$pkg/panel.bat"
