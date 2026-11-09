@@ -120,34 +120,6 @@ func downloadUpdateFile(mixedPort int, url, dest string) error {
 	return fmt.Errorf("下载更新包失败（本机代理与直连均尝试）: %v", lastErr)
 }
 
-// zipHasEOCD zip 完整性粗检：尾部 64KB 内有 EOCD 签名（PK\x05\x06）。
-// 残缺包没有 EOCD，防止拿半截文件去解压误导用户。
-func zipHasEOCD(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil || st.Size() < 22 {
-		return false
-	}
-	tail := int64(66000)
-	if st.Size() < tail {
-		tail = st.Size()
-	}
-	buf := make([]byte, tail)
-	if _, err := f.ReadAt(buf, st.Size()-tail); err != nil {
-		return false
-	}
-	for i := len(buf) - 4; i >= 0; i-- {
-		if buf[i] == 0x50 && buf[i+1] == 0x4B && buf[i+2] == 0x05 && buf[i+3] == 0x06 {
-			return true
-		}
-	}
-	return false
-}
-
 // extractZipPanel 从整包 zip 中解出 panel.exe / wintun.dll 到 exe 目录的暂存文件。
 func extractZipPanel(zipPath, exeDir string) (string, error) {
 	zr, err := zip.OpenReader(zipPath)

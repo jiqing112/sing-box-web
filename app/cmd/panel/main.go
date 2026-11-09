@@ -59,6 +59,12 @@ func main() {
 	debug.SetMemoryLimit(96 << 20)
 	debug.SetGCPercent(60)
 
+	// 清理上次自动更新留下的残留（panel.update.*；panel.exe.old 是回滚备份，
+	// 保留到下次更新时由交换逻辑清理）
+	if exe, err := os.Executable(); err == nil {
+		api.CleanupUpdateLeftovers(exe)
+	}
+
 	// 数据目录统一成绝对路径：渲染出的 cache_file.path、mihomo 的 -d、
 	// 子进程工作目录都以它为准，相对路径在不同启动方式下会指向不同位置。
 	if abs, err := filepath.Abs(*dataDir); err == nil {

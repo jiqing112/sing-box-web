@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -230,6 +231,7 @@ var (
 	updStateMu sync.Mutex
 	updState   updateStatus
 	updCacheAt time.Time
+	updBusy    atomic.Bool // 并发防护：同一时刻只允许一个更新任务
 )
 
 type updateStatus struct {
@@ -267,6 +269,12 @@ func (s *Server) updateGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateSet(w http.ResponseWriter, r *http.Request) {
+	// 两个页面同时点更新会双下载并竞争交换文件，这里挡住第二个
+	if !updBusy.CompareAndSwap(false, true) {
+		writeErr(w, 409, "update_busy", "已有更新任务正在进行，请稍候")
+		return
+	}
+	defer updBusy.Store(false)
 	mixedPort := s.store.Settings().MixedPort
 	if mixedPort <= 0 {
 		mixedPort = 7890
@@ -338,4 +346,49 @@ func sha256File(path string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// CleanupUpdateLeftovers 启动时清理上次自动更新的残留（panel.update.*）。
+// panel.exe.old 是回滚备份，保留到下次更新由交换逻辑清理；
+// 残缺 zip 删掉，完整的保留供下次 POST 直接复用（整包 zip 仅 Windows 有）。
+func CleanupUpdateLeftovers(exePath string) {
+	dir := filepath.Dir(exePath)
+	for _, name := range []string{"panel.update.panel.exe", "panel.update.wintun.dll", "panel.update.tmp"} {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+	zipPath := filepath.Join(dir, "panel.update.zip")
+	if runtime.GOOS == "windows" {
+		if st, err := os.Stat(zipPath); err == nil && st.Size() > 0 && !zipHasEOCD(zipPath) {
+			_ = os.Remove(zipPath)
+		}
+	}
+}
+
+// zipHasEOCD zip 完整性粗检：尾部 64KB 内有 EOCD 签名（PK\x05\x06）。
+// 残缺包没有 EOCD，防止拿半截文件去解压误导用户。启动清理也用它判断
+// 残留的断点 zip 是否值得保留续传。
+func zipHasEOCD(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() < 22 {
+		return false
+	}
+	tail := int64(66000)
+	if st.Size() < tail {
+		tail = st.Size()
+	}
+	buf := make([]byte, tail)
+	if _, err := f.ReadAt(buf, st.Size()-tail); err != nil {
+		return false
+	}
+	for i := len(buf) - 4; i >= 0; i-- {
+		if buf[i] == 0x50 && buf[i+1] == 0x4B && buf[i+2] == 0x05 && buf[i+3] == 0x06 {
+			return true
+		}
+	}
+	return false
 }
